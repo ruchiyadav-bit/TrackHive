@@ -1,0 +1,111 @@
+const User = require('../models/User');
+const { z } = require('zod');
+
+const createUserSchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  email: z.string().email().toLowerCase().trim(),
+  password: z.string().min(8),
+  role: z.enum(['admin', 'manager', 'viewer']),
+  status: z.enum(['active', 'inactive']).optional().default('active'),
+  offerAccess: z.enum(['all', 'specific']).optional().default('all'),
+  allowedOffers: z.array(z.string()).optional().default([]),
+});
+
+const updateUserSchema = z.object({
+  name: z.string().min(1).max(100).trim().optional(),
+  email: z.string().email().toLowerCase().trim().optional(),
+  password: z.string().min(8).optional(),
+  role: z.enum(['admin', 'manager', 'viewer']).optional(),
+  status: z.enum(['active', 'inactive']).optional(),
+  offerAccess: z.enum(['all', 'specific']).optional(),
+  allowedOffers: z.array(z.string()).optional(),
+});
+
+exports.listUsers = async (req, res, next) => {
+  try {
+    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    res.json({ users });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createUser = async (req, res, next) => {
+  try {
+    const data = createUserSchema.parse(req.body);
+
+    // Only super_admin can create admins
+    if (data.role === 'admin' && req.user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Only super admins can create admin users' });
+    }
+
+    const user = new User({ ...data, createdBy: req.user._id });
+    await user.save();
+
+    res.status(201).json({ user: user.toJSON() });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getUser = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id).select('-password');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateUser = async (req, res, next) => {
+  try {
+    const data = updateUserSchema.parse(req.body);
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Cannot edit super_admin unless you are the super_admin
+    if (user.role === 'super_admin' && req.user._id.toString() !== user._id.toString()) {
+      return res.status(403).json({ error: 'Cannot modify super admin' });
+    }
+
+    Object.assign(user, data);
+    await user.save();
+
+    res.json({ user: user.toJSON() });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteUser = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (user.role === 'super_admin') {
+      return res.status(403).json({ error: 'Cannot delete super admin' });
+    }
+
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ message: 'User deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateUserStatus = async (req, res, next) => {
+  try {
+    const { status } = z.object({ status: z.enum(['active', 'inactive']) }).parse(req.body);
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.role === 'super_admin') {
+      return res.status(403).json({ error: 'Cannot deactivate super admin' });
+    }
+    user.status = status;
+    await user.save();
+    res.json({ user: user.toJSON() });
+  } catch (error) {
+    next(error);
+  }
+};

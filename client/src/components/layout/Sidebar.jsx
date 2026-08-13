@@ -1,0 +1,161 @@
+import { useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import {
+  LayoutDashboard, FileText, BarChart3, Settings,
+  ChevronDown, ChevronRight, PanelLeftClose, PanelLeft,
+  Plus, Users, Globe, MousePointerClick, Calendar, Monitor, Megaphone,
+} from 'lucide-react';
+
+const navItems = [
+  {
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    path: '/',
+  },
+  {
+    label: 'Offers',
+    icon: FileText,
+    path: '/offers',
+    children: [
+      { label: 'All Offers', path: '/offers', icon: FileText },
+      { label: '+ Create Offer', path: '/offers/new', icon: Plus },
+    ],
+  },
+  {
+    label: 'Advertisers',
+    icon: Megaphone,
+    path: '/advertisers',
+    children: [
+      { label: 'All Advertisers', path: '/advertisers', icon: Megaphone },
+      { label: '+ Add Advertiser', path: '/advertisers/new', icon: Plus },
+    ],
+  },
+  {
+    label: 'Reports',
+    icon: BarChart3,
+    path: '/reports',
+    children: [
+      { label: 'Offer Report', path: '/reports/offers', icon: FileText },
+      { label: 'Daily Report', path: '/reports/daily', icon: Calendar },
+      { label: 'Country Report', path: '/reports/geo', icon: Globe },
+      { label: 'Device Report', path: '/reports/device', icon: Monitor },
+      { label: 'Click Log', path: '/reports/clicks', icon: MousePointerClick },
+    ],
+  },
+  {
+    label: 'Settings',
+    icon: Settings,
+    path: '/settings',
+    children: [
+      { label: 'General', path: '/settings/general', icon: Settings },
+      { label: 'Tracking Domains', path: '/settings/tracking-domains', icon: Globe },
+      { label: 'Users', path: '/settings/users', icon: Users },
+    ],
+  },
+];
+
+function NavItem({ item, collapsed }) {
+  const location = useLocation();
+  const [open, setOpen] = useState(
+    item.children?.some((c) => location.pathname === c.path) || false
+  );
+  const hasChildren = item.children && item.children.length > 0;
+  const Icon = item.icon;
+
+  const isActive = hasChildren
+    ? item.children.some((c) => location.pathname === c.path)
+    : location.pathname === item.path;
+
+  if (hasChildren && !collapsed) {
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(!open)}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+            isActive
+              ? 'bg-blue-50 text-blue-700'
+              : 'text-gray-700 hover:bg-gray-100'
+          }`}
+        >
+          <Icon size={18} />
+          <span className="flex-1 text-left">{item.label}</span>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        {open && (
+          <div className="ml-4 mt-1 space-y-0.5">
+            {item.children.map((child) => {
+              const ChildIcon = child.icon;
+              return (
+                <NavLink
+                  key={child.path}
+                  to={child.path}
+                  end={child.path === '/offers' || child.path === '/advertisers'}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                      isActive
+                        ? 'bg-blue-50 text-blue-700 font-medium'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`
+                  }
+                >
+                  <ChildIcon size={15} />
+                  {child.label}
+                </NavLink>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <NavLink
+      to={item.path}
+      end
+      className={({ isActive }) =>
+        `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+          isActive
+            ? 'bg-blue-50 text-blue-700'
+            : 'text-gray-700 hover:bg-gray-100'
+        }`
+      }
+      title={collapsed ? item.label : undefined}
+    >
+      <Icon size={18} />
+      {!collapsed && <span>{item.label}</span>}
+    </NavLink>
+  );
+}
+
+export default function Sidebar({ onCloseMobile }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <aside
+      className={`${
+        collapsed ? 'w-16' : 'w-60'
+      } h-full bg-white border-r border-gray-200 flex flex-col transition-all duration-200 shrink-0`}
+    >
+      {/* Logo */}
+      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
+        {!collapsed && (
+          <span className="text-lg font-bold text-blue-600">TrackHive</span>
+        )}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 hidden lg:block"
+        >
+          {collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 p-3 space-y-1 overflow-y-auto" onClick={onCloseMobile}>
+        {navItems.map((item) => (
+          <NavItem key={item.path + item.label} item={item} collapsed={collapsed} />
+        ))}
+      </nav>
+    </aside>
+  );
+}

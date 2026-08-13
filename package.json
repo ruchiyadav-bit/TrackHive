@@ -1,0 +1,17 @@
+{
+  "name": "trackhive",
+  "version": "1.0.0",
+  "description": "TrackHive — Offer Tracking Dashboard",
+  "private": true,
+  "scripts": {
+    "dev:server": "cd server && node index.js",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "cd client && npm run build",
+    "start": "cd server && node index.js",
+    "seed": "cd server && node utils/seedAdmin.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
