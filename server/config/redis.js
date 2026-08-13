@@ -1,36 +1,54 @@
-const Redis = require('ioredis');
-
-let redis;
+let redis = null;
 
 const connectRedis = () => {
-  const options = {
-    host: process.env.REDIS_HOST || '127.0.0.1',
-    port: parseInt(process.env.REDIS_PORT || '6379'),
-    maxRetriesPerRequest: 3,
-    retryStrategy(times) {
-      if (times > 10) {
-        console.error('Redis: max retries reached, giving up');
-        return null;
-      }
-      return Math.min(times * 200, 2000);
-    },
-  };
-
-  if (process.env.REDIS_PASSWORD) {
-    options.password = process.env.REDIS_PASSWORD;
+  // Redis is optional — skip if no REDIS_HOST configured
+  if (!process.env.REDIS_HOST && !process.env.REDIS_URL) {
+    console.log('Redis: not configured, running without Redis (IP capping disabled)');
+    return null;
   }
 
-  redis = new Redis(options);
+  try {
+    const Redis = require('ioredis');
 
-  redis.on('connect', () => {
-    console.log('Redis connected');
-  });
+    let client;
+    if (process.env.REDIS_URL) {
+      client = new Redis(process.env.REDIS_URL, {
+        maxRetriesPerRequest: 3,
+        retryStrategy(times) {
+          if (times > 10) return null;
+          return Math.min(times * 200, 2000);
+        },
+      });
+    } else {
+      const options = {
+        host: process.env.REDIS_HOST,
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        maxRetriesPerRequest: 3,
+        retryStrategy(times) {
+          if (times > 10) return null;
+          return Math.min(times * 200, 2000);
+        },
+      };
+      if (process.env.REDIS_PASSWORD) {
+        options.password = process.env.REDIS_PASSWORD;
+      }
+      client = new Redis(options);
+    }
 
-  redis.on('error', (err) => {
-    console.error('Redis error:', err.message);
-  });
+    client.on('connect', () => {
+      console.log('Redis connected');
+    });
 
-  return redis;
+    client.on('error', (err) => {
+      console.error('Redis error:', err.message);
+    });
+
+    redis = client;
+    return redis;
+  } catch (err) {
+    console.warn('Redis: failed to initialize, running without Redis:', err.message);
+    return null;
+  }
 };
 
 const getRedis = () => redis;
