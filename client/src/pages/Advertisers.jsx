@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Copy, RefreshCw, ExternalLink, Search } from 'lucide-react';
+import { Plus, Edit2, Trash2, Copy, RefreshCw, ExternalLink, Search, AlertTriangle } from 'lucide-react';
 import api from '../api/client';
 
 const statusColors = {
@@ -14,6 +14,7 @@ export default function Advertisers() {
  const [editing, setEditing] = useState(null);
  const [search, setSearch] = useState('');
  const [copied, setCopied] = useState(null);
+ const [trackingDomain, setTrackingDomain] = useState('');
  const [form, setForm] = useState({
  name: '', company: '', website: '', status: 'active',
  clickIdParam: 'click_id', contactName: '', contactEmail: '', notes: '',
@@ -31,6 +32,26 @@ export default function Advertisers() {
  setLoading(false);
  }
  };
+
+ // Fetch tracking domain from settings + verified domains list
+ useEffect(() => {
+ const loadDomain = async () => {
+ try {
+ const [settingsRes, domainsRes] = await Promise.all([
+ api.get('/settings').catch(() => ({ data: { settings: {} } })),
+ api.get('/tracking-domains').catch(() => ({ data: { domains: [] } })),
+ ]);
+ const settings = settingsRes.data.settings || {};
+ const domains = (domainsRes.data.domains || []).filter(d => d.status === 'verified');
+ // Priority: settings.trackingDomain → first verified domain → empty
+ const domain = settings.trackingDomain || (domains.length > 0 ? domains[0].domain : '');
+ setTrackingDomain(domain);
+ } catch (err) {
+ console.error(err);
+ }
+ };
+ loadDomain();
+ }, []);
 
  useEffect(() => { fetchAdvertisers(); }, [search]);
 
@@ -76,7 +97,9 @@ export default function Advertisers() {
  };
 
  const copyPostbackUrl = (adv) => {
- const url = `https://{tracking_domain}/postback?adv=${adv._id}&click_id={click_id}&amount={amount}&txn_id={transaction_id}&secret=${adv.postbackSecret}`;
+ if (!trackingDomain) return;
+ const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
+ const url = `${base}/postback?click_id={click_id}&revenue={revenue}&payout={payout}&event={event}&secret=${adv.postbackSecret || '{secret}'}`;
  navigator.clipboard.writeText(url);
  setCopied(adv._id);
  setTimeout(() => setCopied(null), 2000);
@@ -145,9 +168,15 @@ export default function Advertisers() {
  </td>
  <td className="px-4 py-3 text-sm font-mono text-gray-600">{adv.clickIdParam}</td>
  <td className="px-4 py-3">
+ {trackingDomain ? (
  <button onClick={() => copyPostbackUrl(adv)} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
  <Copy size={12} /> {copied === adv._id ? 'Copied!' : 'Copy URL'}
  </button>
+ ) : (
+ <span className="flex items-center gap-1 text-xs text-amber-600">
+ <AlertTriangle size={12} /> Add a tracking domain first
+ </span>
+ )}
  </td>
  <td className="px-4 py-3">
  <div className="flex items-center gap-2">

@@ -150,7 +150,8 @@ export default function OfferDetail() {
  const trackingDomain = offer.trackingDomain?.domain || settings.trackingDomain || window.location.origin;
  const baseUrl = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
  const clickUrl = `${baseUrl}/click?offer_id=${offer._id}&sub1={sub1}&sub2={sub2}&source={source}`;
- const postbackUrl = `${baseUrl}/postback?click_id={click_id}&payout={payout}&revenue={revenue}&event={event}`;
+ const advSecret = typeof offer.advertiser === 'object' ? offer.advertiser?.postbackSecret : null;
+ const postbackUrl = `${baseUrl}/postback?click_id={click_id}&revenue={revenue}&payout={payout}&event={event}${advSecret ? `&secret=${advSecret}` : ''}`;
 
  // Stats
  const cvr = offer.totalClicks > 0 ? (offer.totalConversions / offer.totalClicks) * 100 : 0;

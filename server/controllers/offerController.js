@@ -78,7 +78,7 @@ exports.getOffer = async (req, res, next) => {
     const offer = await Offer.findOne({
       _id: req.params.id,
       status: { $ne: 'deleted' },
-    }).populate('advertiser', 'name').populate('trackingDomain', 'domain status');
+    }).populate('advertiser', 'name postbackSecret').populate('trackingDomain', 'domain status');
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
 
     if (req.user.offerAccess === 'specific' &&

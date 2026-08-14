@@ -72,8 +72,12 @@ exports.handlePostback = async (req, res) => {
     }
 
     // Calculate revenue and payout
+    // Aliases: amount → revenue, txn_id / transaction_id kept for legacy compat
     let revenue = 0;
     let payout = 0;
+    const qRevenue = req.query.revenue || req.query.amount;
+    const qPayout  = req.query.payout;
+    const txnId    = req.query.txn_id || req.query.transaction_id || '';
 
     // Check for event-specific values
     const matchedEvent = offer.events?.find(e => e.eventId === eventName || e.name === eventName);
@@ -83,14 +87,14 @@ exports.handlePostback = async (req, res) => {
       payout = matchedEvent.payoutAmount || 0;
     } else {
       // Use offer-level values
-      if (req.query.revenue) {
-        revenue = parseFloat(req.query.revenue);
+      if (qRevenue) {
+        revenue = parseFloat(qRevenue);
       } else if (['RPA', 'CPA', 'RPS', 'RPC'].includes(offer.revenueType)) {
         revenue = offer.revenueAmount || 0;
       }
 
-      if (req.query.payout) {
-        payout = parseFloat(req.query.payout);
+      if (qPayout) {
+        payout = parseFloat(qPayout);
       } else if (['CPA', 'CPS', 'CPL', 'CPI'].includes(offer.payoutType)) {
         payout = offer.payoutAmount || 0;
       }
@@ -147,6 +151,7 @@ exports.handlePostback = async (req, res) => {
       conversionId,
       clickId,
       event: eventName || undefined,
+      txnId: txnId || undefined,
       revenue,
       payout,
       profit,
