@@ -4,7 +4,7 @@ const presets = require('../config/networkPresets');
  * Build a postback URL using the correct macros for the advertiser's network.
  *
  * @param {Object} opts
- * @param {string} opts.trackingDomain - e.g. "everflow.adslaunchigo.com"
+ * @param {string} opts.trackingDomain - e.g. "track.example.com"
  * @param {string} opts.network        - preset key, e.g. "impact", "custom"
  * @param {string} opts.secret         - advertiser postback secret
  * @returns {string} fully-formed postback URL

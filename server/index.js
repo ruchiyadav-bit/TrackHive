@@ -23,7 +23,23 @@ for (const envVar of requiredEnvVars) {
 const app = express();
 const PORT = process.env.PORT || 3050;
 
-// Security middleware
+// Trust proxy — env-driven for Render (1), Nginx reverse proxy, etc.
+app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
+
+// ── PUBLIC TRACKING ROUTES ──────────────────────────────────────────
+// Mounted FIRST — before body parsers, rate limiters, and any other
+// middleware. These handle bare GET requests with zero overhead.
+// No auth, no rate limit, no session, no JSON parsing.
+const smartLinkHandler = require('./routes/smartLink');
+app.use('/go', smartLinkHandler);
+
+const clickHandler = require('./routes/click');
+app.use('/click', clickHandler);
+
+const postbackHandler = require('./routes/postback');
+app.use('/postback', postbackHandler);
+
+// ── APP MIDDLEWARE ──────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
@@ -34,7 +50,7 @@ app.use(mongoSanitize());
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
-// Rate limiting
+// Rate limiting (API only — tracking routes are above)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
@@ -48,16 +64,6 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many login attempts. Try again in 15 minutes.' },
 });
 app.use('/api/auth/login', loginLimiter);
-
-// Public routes (before auth) — Smart Link + Click + Postback
-const smartLinkHandler = require('./routes/smartLink');
-app.use('/go', smartLinkHandler);
-
-const clickHandler = require('./routes/click');
-app.use('/click', clickHandler);
-
-const postbackHandler = require('./routes/postback');
-app.use('/postback', postbackHandler);
 
 // API routes
 const authRoutes = require('./routes/auth');

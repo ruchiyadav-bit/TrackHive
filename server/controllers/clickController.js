@@ -35,44 +35,52 @@ exports.handleClick = async (req, res) => {
       ...visitor,
     });
 
-    // Log click
-    const click = new Click({
-      clickId,
-      offerId: offer._id,
-      offerName: offer.name,
-      ...visitor,
-      subId1: req.query.sub1 || req.query.subid || '',
-      subId2: req.query.sub2 || '',
-      subId3: req.query.sub3 || '',
-      subId4: req.query.sub4 || '',
-      subId5: req.query.sub5 || '',
-      source: req.query.source || '',
-      redirectUrl,
-      redirectType: offer.redirectType,
-      responseTimeMs: Date.now() - startTime,
-      clickedAt: new Date(),
+    // ── REDIRECT FIRST — DB writes happen after the response is sent ──
+    const redirectMode = offer.redirectType === 'direct' ? 301 : 302;
+    res.redirect(redirectMode, redirectUrl);
+
+    // Fire-and-forget: log click + update stats in the background
+    setImmediate(async () => {
+      try {
+        const click = new Click({
+          clickId,
+          offerId: offer._id,
+          offerName: offer.name,
+          ...visitor,
+          subId1: req.query.sub1 || req.query.subid || '',
+          subId2: req.query.sub2 || '',
+          subId3: req.query.sub3 || '',
+          subId4: req.query.sub4 || '',
+          subId5: req.query.sub5 || '',
+          source: req.query.source || '',
+          redirectUrl,
+          redirectType: offer.redirectType,
+          responseTimeMs: Date.now() - startTime,
+          clickedAt: new Date(),
+        });
+        await click.save();
+
+        await Promise.all([
+          updateDailyStats(DailyStat, offer._id, offer.name, {
+            click: true,
+            country: visitor.country,
+            device: visitor.device,
+            browser: visitor.browser,
+            os: visitor.os,
+            source: req.query.source,
+            subId1: req.query.sub1 || req.query.subid,
+          }),
+          Offer.updateOne({ _id: offer._id }, { $inc: { totalClicks: 1 } }),
+        ]);
+      } catch (bgErr) {
+        console.error('Click background write error:', bgErr);
+      }
     });
-    await click.save();
-
-    // Update daily stats
-    await updateDailyStats(DailyStat, offer._id, offer.name, {
-      click: true,
-      country: visitor.country,
-      device: visitor.device,
-      browser: visitor.browser,
-      os: visitor.os,
-      source: req.query.source,
-      subId1: req.query.sub1 || req.query.subid,
-    });
-
-    // Update offer totals
-    await Offer.updateOne({ _id: offer._id }, { $inc: { totalClicks: 1 } });
-
-    // Redirect
-    res.redirect(302, redirectUrl);
   } catch (err) {
     console.error('Click handler error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 };
 
