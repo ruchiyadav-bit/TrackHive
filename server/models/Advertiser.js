@@ -11,6 +11,11 @@ const advertiserSchema = new mongoose.Schema(
       type: String,
       default: () => crypto.randomBytes(16).toString('hex'),
     },
+    network: {
+      type: String,
+      enum: ['impact', 'everflow', 'affise', 'trackier', 'cellxpert', 'custom'],
+      default: 'custom',
+    },
     clickIdParam: { type: String, default: 'click_id', trim: true },
     contactName: { type: String, trim: true },
     contactEmail: { type: String, trim: true },

@@ -101,16 +101,19 @@ export default function OfferDetail() {
  const [offer, setOffer] = useState(null);
  const [loading, setLoading] = useState(true);
  const [settings, setSettings] = useState({});
+ const [presets, setPresets] = useState(null);
 
  useEffect(() => {
  const fetchData = async () => {
  try {
- const [offerRes, settingsRes] = await Promise.all([
+ const [offerRes, settingsRes, presetsRes] = await Promise.all([
  api.get(`/offers/${id}`),
  api.get('/settings').catch(() => ({ data: { settings: {} } })),
+ api.get('/network-presets').catch(() => ({ data: { presets: null } })),
  ]);
  setOffer(offerRes.data.offer);
  setSettings(settingsRes.data.settings || {});
+ if (presetsRes.data.presets) setPresets(presetsRes.data.presets);
  } catch (err) {
  console.error('Failed to fetch offer:', err);
  navigate('/offers');
@@ -151,7 +154,10 @@ export default function OfferDetail() {
  const baseUrl = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
  const clickUrl = `${baseUrl}/click?offer_id=${offer._id}&sub1={sub1}&sub2={sub2}&source={source}`;
  const advSecret = typeof offer.advertiser === 'object' ? offer.advertiser?.postbackSecret : null;
- const postbackUrl = `${baseUrl}/postback?click_id={click_id}&revenue={revenue}&payout={payout}&event={event}${advSecret ? `&secret=${advSecret}` : ''}`;
+ const advNetwork = typeof offer.advertiser === 'object' ? (offer.advertiser?.network || 'custom') : 'custom';
+ const preset = presets?.[advNetwork] || presets?.custom;
+ const macros = preset?.macros || { click_id: '{click_id}', revenue: '{revenue}', payout: '{payout}', event: '{event}' };
+ const postbackUrl = `${baseUrl}/postback?click_id=${macros.click_id}&revenue=${macros.revenue}&payout=${macros.payout}&event=${macros.event}${advSecret ? `&secret=${advSecret}` : ''}`;
 
  // Stats
  const cvr = offer.totalClicks > 0 ? (offer.totalConversions / offer.totalClicks) * 100 : 0;

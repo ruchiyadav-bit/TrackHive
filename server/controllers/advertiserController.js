@@ -31,12 +31,13 @@ exports.get = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { name, company, website, status, clickIdParam, contactName, contactEmail, notes } = req.body;
+    const { name, company, website, status, network, clickIdParam, contactName, contactEmail, notes } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
 
     const advertiser = new Advertiser({
       name: name.trim(),
       company, website, status,
+      network: network || 'custom',
       clickIdParam: clickIdParam || 'click_id',
       contactName, contactEmail, notes,
       postbackSecret: crypto.randomBytes(16).toString('hex'),

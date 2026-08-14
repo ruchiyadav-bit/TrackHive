@@ -74,6 +74,7 @@ const telegramRoutes = require('./routes/telegram');
 const smartLinksRoutes = require('./routes/smartLinks');
 const advertiserRoutes = require('./routes/advertisers');
 const trackingDomainRoutes = require('./routes/trackingDomains');
+const networkPresetRoutes = require('./routes/networkPresets');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/offers', offerRoutes);
@@ -89,6 +90,7 @@ app.use('/api/telegram', telegramRoutes);
 app.use('/api/smart-links', smartLinksRoutes);
 app.use('/api/advertisers', advertiserRoutes);
 app.use('/api/tracking-domains', trackingDomainRoutes);
+app.use('/api/network-presets', networkPresetRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
