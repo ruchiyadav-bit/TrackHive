@@ -1,11 +1,12 @@
 const Click = require('../models/Click');
 const Offer = require('../models/Offer');
+const Advertiser = require('../models/Advertiser');
 const DailyStat = require('../models/DailyStat');
 const Notification = require('../models/Notification');
 const { updateDailyStats } = require('../utils/clickHelpers');
 
 /**
- * Handle postback conversion: GET /postback?click_id=xxx&payout=1.50&event=signup
+ * Handle postback conversion: GET /postback?click_id=xxx&payout=1.50&event=signup&secret=abc
  */
 exports.handlePostback = async (req, res) => {
   try {
@@ -19,13 +20,55 @@ exports.handlePostback = async (req, res) => {
       return res.status(404).json({ error: 'Click not found' });
     }
 
-    if (click.converted) {
-      return res.status(409).json({ error: 'Already converted', conversionId: click.conversionId });
-    }
-
     const offer = await Offer.findById(click.offerId);
     if (!offer) {
       return res.status(404).json({ error: 'Offer not found' });
+    }
+
+    // --- FIX 1: Postback secret verification ---
+    // If offer has an advertiser with a postbackSecret, require it
+    if (offer.advertiser) {
+      const advertiser = await Advertiser.findById(offer.advertiser);
+      if (advertiser && advertiser.postbackSecret) {
+        const providedSecret = req.query.secret || req.query.token || '';
+        if (providedSecret !== advertiser.postbackSecret) {
+          return res.status(403).json({ error: 'Invalid postback secret' });
+        }
+      }
+    }
+
+    // --- FIX 3: Click-to-conversion time window check ---
+    if (offer.enableClickToConversionTime && offer.clickToConversionValue > 0) {
+      const clickTime = click.clickedAt || click.createdAt;
+      const now = new Date();
+      let maxMs;
+      switch (offer.clickToConversionUnit) {
+        case 'days': maxMs = offer.clickToConversionValue * 24 * 60 * 60 * 1000; break;
+        case 'months': maxMs = offer.clickToConversionValue * 30 * 24 * 60 * 60 * 1000; break;
+        case 'hours':
+        default: maxMs = offer.clickToConversionValue * 60 * 60 * 1000; break;
+      }
+      const elapsed = now - new Date(clickTime);
+      if (elapsed > maxMs) {
+        return res.status(410).json({
+          error: 'Conversion window expired',
+          clickAge: Math.round(elapsed / 3600000) + ' hours',
+          maxWindow: offer.clickToConversionValue + ' ' + (offer.clickToConversionUnit || 'hours'),
+        });
+      }
+    }
+
+    // --- FIX 2: Multi-event conversion support ---
+    const eventName = req.query.event || req.query.goal || '';
+
+    // Check duplicate logic: if already converted, allow only if:
+    // 1. allowDuplicateConversions is enabled on the offer, OR
+    // 2. A different event name is provided (multi-event support)
+    if (click.converted) {
+      const isDifferentEvent = eventName && eventName !== (click.conversionEvent || '');
+      if (!offer.allowDuplicateConversions && !isDifferentEvent) {
+        return res.status(409).json({ error: 'Already converted', conversionId: click.conversionId });
+      }
     }
 
     // Calculate revenue and payout
@@ -33,7 +76,6 @@ exports.handlePostback = async (req, res) => {
     let payout = 0;
 
     // Check for event-specific values
-    const eventName = req.query.event || req.query.goal || '';
     const matchedEvent = offer.events?.find(e => e.eventId === eventName || e.name === eventName);
 
     if (matchedEvent) {
@@ -43,9 +85,7 @@ exports.handlePostback = async (req, res) => {
       // Use offer-level values
       if (req.query.revenue) {
         revenue = parseFloat(req.query.revenue);
-      } else if (offer.revenueType === 'CPA') {
-        revenue = offer.revenueAmount || 0;
-      } else if (offer.revenueType === 'RPS' || offer.revenueType === 'CPC') {
+      } else if (['RPA', 'CPA', 'RPS', 'RPC'].includes(offer.revenueType)) {
         revenue = offer.revenueAmount || 0;
       }
 
@@ -59,14 +99,24 @@ exports.handlePostback = async (req, res) => {
     const profit = revenue - payout;
     const conversionId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-    // Update click
-    click.converted = true;
-    click.conversionId = conversionId;
-    click.conversionAt = new Date();
-    click.revenue = revenue;
-    click.payout = payout;
-    click.profit = profit;
-    click.conversionEvent = eventName;
+    // Update click — for multi-event, accumulate revenue/payout
+    if (click.converted) {
+      // Multi-event: add to existing values
+      click.revenue = (click.revenue || 0) + revenue;
+      click.payout = (click.payout || 0) + payout;
+      click.profit = (click.profit || 0) + profit;
+      // Track all events as comma-separated
+      const existingEvents = click.conversionEvent || '';
+      click.conversionEvent = existingEvents ? `${existingEvents},${eventName}` : eventName;
+    } else {
+      click.converted = true;
+      click.conversionId = conversionId;
+      click.conversionAt = new Date();
+      click.revenue = revenue;
+      click.payout = payout;
+      click.profit = profit;
+      click.conversionEvent = eventName;
+    }
     await click.save();
 
     // Update offer totals
@@ -96,6 +146,7 @@ exports.handlePostback = async (req, res) => {
       success: true,
       conversionId,
       clickId,
+      event: eventName || undefined,
       revenue,
       payout,
       profit,
@@ -167,13 +218,15 @@ async function checkCapsAndNotify(offer, revenue) {
       }
     }
 
-    // Save notifications
+    // Save notifications and send to Telegram
+    const { sendNotificationToTelegram } = require('../utils/telegram');
     for (const alert of alerts) {
-      await Notification.create({
+      const notification = await Notification.create({
         ...alert,
         offerId: offer._id,
         offerName: offer.name,
       });
+      sendNotificationToTelegram(notification).catch(() => {});
     }
   } catch (err) {
     console.error('Cap check error:', err);

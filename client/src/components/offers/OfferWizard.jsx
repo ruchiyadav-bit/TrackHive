@@ -59,22 +59,23 @@ function Label({ children, required }) {
  return <label className="block text-sm font-medium text-gray-700 mb-1">{children} {required && <span className="text-red-500">*</span>}</label>;
 }
 
-function Input({ label, required, value, onChange, placeholder, type = 'text', ...props }) {
+function Input({ label, required, value, onChange, placeholder, type = 'text', error, ...props }) {
  return (
  <div>
  <Label required={required}>{label}</Label>
  <input type={type} value={value ?? ''} onChange={(e) => onChange(type === 'number' ? (parseFloat(e.target.value) || 0) : e.target.value)}
- placeholder={placeholder} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900" {...props} />
+ placeholder={placeholder} className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900 ${error ? 'border-red-400' : 'border-gray-200'}`} {...props} />
+ {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
  </div>
  );
 }
 
-function Select({ label, required, value, onChange, options, placeholder }) {
+function Select({ label, required, value, onChange, options, placeholder, error }) {
  return (
  <div>
  <Label required={required}>{label}</Label>
  <select value={value ?? ''} onChange={(e) => onChange(e.target.value)}
- className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900">
+ className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900 ${error ? 'border-red-400' : 'border-gray-200'}`}>
  {placeholder && <option value="">{placeholder}</option>}
  {options.map((o) => {
  const val = typeof o === 'string' ? o : o.value;
@@ -82,6 +83,7 @@ function Select({ label, required, value, onChange, options, placeholder }) {
  return <option key={val} value={val}>{lab}</option>;
  })}
  </select>
+ {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
  </div>
  );
 }
@@ -165,18 +167,18 @@ function Collapsible({ title, children, defaultOpen = false }) {
 
 // ---- Step Components ----
 
-function StepGeneral({ form, setField, advertisers, offerGroups }) {
+function StepGeneral({ form, setField, advertisers, offerGroups, errors = {} }) {
  return (
  <div className="space-y-4">
  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
- <Input label="Offer Name" required value={form.name} onChange={v => setField('name', v)} placeholder="BetMGM Casino US" />
+ <Input label="Offer Name" required value={form.name} onChange={v => setField('name', v)} placeholder="BetMGM Casino US" error={errors.name} />
  <Select label="Status" required value={form.status} onChange={v => setField('status', v)}
  options={[{ value: 'active', label: 'Active' }, { value: 'paused', label: 'Paused' }, { value: 'draft', label: 'Draft' }]} />
  </div>
  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
  <Select label="Advertiser" required value={form.advertiser} onChange={v => setField('advertiser', v)}
- options={advertisers.map(a => ({ value: a._id, label: a.name }))} placeholder="Select advertiser..." />
- <Select label="Category" required value={form.category} onChange={v => setField('category', v)}
+ options={advertisers.map(a => ({ value: a._id, label: a.name }))} placeholder="Select advertiser..." error={errors.advertiser} />
+ <Select label="Category" value={form.category} onChange={v => setField('category', v)}
  options={CATEGORIES} placeholder="Select category..." />
  </div>
  <Select label="Currency" required value={form.currency} onChange={v => setField('currency', v)} options={CURRENCIES} />
@@ -212,14 +214,14 @@ function StepGeneral({ form, setField, advertisers, offerGroups }) {
  );
 }
 
-function StepTracking({ form, setField, trackingDomains }) {
+function StepTracking({ form, setField, trackingDomains, errors = {} }) {
  return (
  <div className="space-y-4">
  <SectionHeader>Default Landing Page</SectionHeader>
- <Input label="Default Landing Page URL" required value={form.landingPageUrl} onChange={v => setField('landingPageUrl', v)} placeholder="https://advertiser.com/landing" />
+ <Input label="Default Landing Page URL" required value={form.landingPageUrl} onChange={v => setField('landingPageUrl', v)} placeholder="https://advertiser.com/landing" error={errors.landingPageUrl} />
 
  <SectionHeader>Tracking Domain</SectionHeader>
- <Select label="Tracking Domain" required value={form.trackingDomain} onChange={v => setField('trackingDomain', v)}
+ <Select label="Tracking Domain" value={form.trackingDomain} onChange={v => setField('trackingDomain', v)}
  options={trackingDomains.filter(d => d.status === 'verified').map(d => ({ value: d._id, label: d.domain }))}
  placeholder={trackingDomains.length === 0 ? 'Add tracking domain in Settings first' : 'Select domain...'} />
 
@@ -473,12 +475,11 @@ export default function OfferWizard({ offerId }) {
  const validateStep = (s) => {
  const errs = {};
  if (s === 0) {
- if (!form.name?.trim()) errs.name = 'Required';
- if (!form.advertiser) errs.advertiser = 'Required';
- if (!form.category) errs.category = 'Required';
+ if (!form.name?.trim()) errs.name = 'Offer name is required';
+ if (!form.advertiser) errs.advertiser = 'Advertiser is required';
  }
  if (s === 1) {
- if (!form.landingPageUrl?.trim()) errs.landingPageUrl = 'Required';
+ if (!form.landingPageUrl?.trim()) errs.landingPageUrl = 'Landing page URL is required';
  }
  setErrors(errs);
  return Object.keys(errs).length === 0;
@@ -497,6 +498,10 @@ export default function OfferWizard({ offerId }) {
  try {
  const payload = { ...form };
  if (isDraft) payload.status = 'draft';
+ // Clean empty ObjectId ref fields — sending '' causes Mongoose CastError
+ ['advertiser', 'trackingDomain', 'offerGroup'].forEach(key => {
+ if (!payload[key]) delete payload[key];
+ });
  if (offerId) {
  await api.put(`/offers/${offerId}`, payload);
  } else {
@@ -553,8 +558,8 @@ export default function OfferWizard({ offerId }) {
 
  {/* Step Content */}
  <div className="bg-white rounded-xl border border-gray-200 p-6 min-h-[400px]">
- {step === 0 && <StepGeneral form={form} setField={setField} advertisers={advertisers} offerGroups={offerGroups} />}
- {step === 1 && <StepTracking form={form} setField={setField} trackingDomains={trackingDomains} />}
+ {step === 0 && <StepGeneral form={form} setField={setField} advertisers={advertisers} offerGroups={offerGroups} errors={errors} />}
+ {step === 1 && <StepTracking form={form} setField={setField} trackingDomains={trackingDomains} errors={errors} />}
  {step === 2 && <StepRevenue form={form} setField={setField} />}
  {step === 3 && <StepAttribution form={form} setField={setField} />}
  {step === 4 && <StepTargeting form={form} setField={setField} />}
