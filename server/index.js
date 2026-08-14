@@ -105,6 +105,11 @@ app.get('/api/health', (req, res) => {
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../client/dist')));
   app.get('*', (req, res) => {
+    // Never serve SPA shell for tracking / API routes
+    const p = req.path;
+    if (p.startsWith('/click') || p.startsWith('/postback') || p.startsWith('/go/') || p.startsWith('/api')) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     res.sendFile(path.join(__dirname, '../client/dist/index.html'));
   });
 }
