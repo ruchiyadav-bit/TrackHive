@@ -22,11 +22,18 @@ exports.handleClick = async (req, res) => {
       return res.status(404).json({ error: 'Offer not found or inactive' });
     }
 
+    // Use correct field — landingPageUrl is primary, offerUrl is legacy fallback
+    const landingUrl = offer.landingPageUrl || offer.offerUrl;
+    if (!landingUrl) {
+      console.error(`[CLICK] Offer ${offer._id} has no landing page URL`);
+      return res.status(500).json({ error: 'Offer has no landing page URL configured' });
+    }
+
     const visitor = parseVisitorInfo(req);
     const clickId = generateClickId();
 
     // Build redirect URL
-    const redirectUrl = replaceMacros(offer.offerUrl, {
+    const redirectUrl = replaceMacros(landingUrl, {
       clickId, offerId: offer._id.toString(),
       subId1: req.query.sub1 || req.query.subid || '',
       subId2: req.query.sub2 || '', subId3: req.query.sub3 || '',
@@ -35,9 +42,17 @@ exports.handleClick = async (req, res) => {
       ...visitor,
     });
 
+    // Validate redirect URL before sending
+    if (!redirectUrl || !/^https?:\/\//i.test(redirectUrl)) {
+      console.error(`[CLICK] Invalid redirect URL: ${redirectUrl}`);
+      return res.status(500).json({ error: 'Invalid redirect URL' });
+    }
+
     // ── REDIRECT FIRST — DB writes happen after the response is sent ──
-    const redirectMode = offer.redirectType === 'direct' ? 301 : 302;
-    res.redirect(redirectMode, redirectUrl);
+    // redirectMode values from model: '301', '302', 'meta_refresh', 'javascript'
+    const statusCode = offer.redirectMode === '301' ? 301 : 302;
+    console.log(`[CLICK] ${clickId} → ${redirectUrl}`);
+    res.redirect(statusCode, redirectUrl);
 
     // Fire-and-forget: log click + update stats in the background
     setImmediate(async () => {
@@ -54,7 +69,7 @@ exports.handleClick = async (req, res) => {
           subId5: req.query.sub5 || '',
           source: req.query.source || '',
           redirectUrl,
-          redirectType: offer.redirectType,
+          redirectType: offer.redirectMode || '302',
           responseTimeMs: Date.now() - startTime,
           clickedAt: new Date(),
         });

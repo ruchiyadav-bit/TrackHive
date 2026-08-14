@@ -26,6 +26,17 @@ exports.handleSmartLink = async (req, res) => {
       `);
     }
 
+    // Use correct field — landingPageUrl is primary, offerUrl is legacy fallback
+    const landingUrl = offer.landingPageUrl || offer.offerUrl;
+    if (!landingUrl) {
+      console.error(`[SMART-LINK] Offer ${offer._id} (slug: ${slug}) has no landing page URL`);
+      return res.status(500).send(`
+        <html><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f9fafb">
+          <div style="text-align:center"><h2>Configuration Error</h2><p style="color:#6b7280">This offer has no landing page URL configured.</p></div>
+        </body></html>
+      `);
+    }
+
     const visitor = parseVisitorInfo(req);
     const clickId = generateClickId();
     const uniqueHash = generateUniqueHash(offer, visitor);
@@ -67,7 +78,7 @@ exports.handleSmartLink = async (req, res) => {
     }
 
     // Build redirect URL with macros
-    const redirectUrl = replaceMacros(offer.offerUrl, {
+    const redirectUrl = replaceMacros(landingUrl, {
       clickId, offerId: offer._id.toString(),
       subId1: req.query.sub1 || req.query.subid || '',
       subId2: req.query.sub2 || '', subId3: req.query.sub3 || '',
@@ -76,19 +87,27 @@ exports.handleSmartLink = async (req, res) => {
       ...visitor,
     });
 
+    // Validate redirect URL
+    if (!redirectUrl || !/^https?:\/\//i.test(redirectUrl)) {
+      console.error(`[SMART-LINK] Invalid redirect URL for slug ${slug}: ${redirectUrl}`);
+      return res.status(500).send('Invalid redirect URL');
+    }
+
+    console.log(`[SMART-LINK] ${clickId} (${slug}) → ${redirectUrl}`);
+
     // Log click
     await logClick(offer, clickId, visitor, req, {
       isDuplicate, isVpn, isSmartLink: true, smartLinkSlug: slug,
       uniqueHash, redirectUrl, startTime,
     });
 
-    // Redirect
-    switch (offer.redirectType) {
-      case 'meta':
+    // Redirect — use redirectMode from model ('302', '301', 'meta_refresh', 'javascript')
+    switch (offer.redirectMode) {
+      case 'meta_refresh':
         return res.send(`<html><head><meta http-equiv="refresh" content="0;url=${redirectUrl}"></head><body></body></html>`);
       case 'javascript':
         return res.send(`<html><body><script>window.location.href="${redirectUrl}";</script></body></html>`);
-      case 'direct':
+      case '301':
         return res.redirect(301, redirectUrl);
       default:
         return res.redirect(302, redirectUrl);
@@ -121,7 +140,7 @@ async function logClick(offer, clickId, visitor, req, opts = {}) {
       isBlocked: opts.isBlocked || false,
       blockReason: opts.blockReason || '',
       redirectUrl: opts.redirectUrl || '',
-      redirectType: offer.redirectType,
+      redirectType: offer.redirectMode || '302',
       responseTimeMs: Date.now() - (opts.startTime || Date.now()),
       clickedAt: new Date(),
     });

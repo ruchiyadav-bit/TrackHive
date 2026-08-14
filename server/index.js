@@ -30,6 +30,7 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
 // Mounted FIRST — before body parsers, rate limiters, and any other
 // middleware. These handle bare GET requests with zero overhead.
 // No auth, no rate limit, no session, no JSON parsing.
+// (POST /postback has its own local express.json() inside the router.)
 const smartLinkHandler = require('./routes/smartLink');
 app.use('/go', smartLinkHandler);
 
