@@ -5,6 +5,10 @@ const sanitizeOffer = (data) => {
   if (data.name) data.name = xss(data.name);
   if (data.description) data.description = xss(data.description);
   if (data.internalNotes) data.internalNotes = xss(data.internalNotes);
+  // Clean empty ObjectId ref fields — '' causes Mongoose CastError
+  ['advertiser', 'trackingDomain', 'offerGroup'].forEach(key => {
+    if (data[key] === '' || data[key] === null) delete data[key];
+  });
   return data;
 };
 

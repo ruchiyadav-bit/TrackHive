@@ -21,6 +21,14 @@ const errorHandler = (err, req, res, next) => {
     return res.status(400).json({ error: 'Validation failed', details: errors });
   }
 
+  // Mongoose CastError (invalid ObjectId etc.)
+  if (err.name === 'CastError') {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: [{ field: err.path, message: `Invalid value for ${err.path}` }],
+    });
+  }
+
   // Mongoose duplicate key
   if (err.code === 11000) {
     const field = Object.keys(err.keyPattern)[0];
