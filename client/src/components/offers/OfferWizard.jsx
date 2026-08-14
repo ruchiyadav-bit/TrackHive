@@ -90,12 +90,12 @@ function Select({ label, required, value, onChange, options, placeholder, error 
 
 function Toggle({ label, checked, onChange }) {
  return (
- <label className="flex items-center gap-3 cursor-pointer">
+ <div className="flex items-center gap-3 cursor-pointer select-none" onClick={onChange} role="switch" aria-checked={checked} tabIndex={0} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onChange())}>
  <div className={`relative w-10 h-5 rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-300'}`}>
  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform shadow ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
  </div>
  <span className="text-sm text-gray-700">{label}</span>
- </label>
+ </div>
  );
 }
 
