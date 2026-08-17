@@ -533,7 +533,7 @@ export default function AdvertiserDetail() {
                 <input value={form.clickIdParam} onChange={(e) => setForm({ ...form, clickIdParam: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                 <p className="mt-1 text-xs text-gray-400 flex items-center gap-1">
-                  <Info size={10} /> This param is added to the advertiser's tracking link, e.g. ?{form.clickIdParam || 'click_id'}={'{'}{'}click_id{'}'}
+                  <Info size={10} /> This param is added to the advertiser's tracking link, e.g. ?{form.clickIdParam || 'click_id'}={'{click_id}'}
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-4">
