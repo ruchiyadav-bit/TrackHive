@@ -98,7 +98,9 @@ app.use('/api/advertisers', advertiserRoutes);
 app.use('/api/tracking-domains', trackingDomainRoutes);
 app.use('/api/network-presets', networkPresetRoutes);
 
-// Health check
+// Health check — includes the deployed git commit (Render sets RENDER_GIT_COMMIT
+// automatically on every deploy) so it's easy to confirm a push actually went
+// live before re-testing, instead of guessing whether the build finished.
 app.get('/api/health', (req, res) => {
   const mongoose = require('mongoose');
   res.json({
@@ -106,6 +108,7 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     timestamp: Date.now(),
     mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    commit: process.env.RENDER_GIT_COMMIT || 'unknown',
   });
 });
 
