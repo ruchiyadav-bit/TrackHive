@@ -1,17 +1,32 @@
-const DailyStat = require('../models/DailyStat');
+// NOTE: reports no longer read DailyStat. Its rows are pre-bucketed by UTC day,
+// which cannot be re-bucketed into another timezone after the fact. Everything
+// is now aggregated from the raw Click collection, where clickedAt/conversionAt
+// are exact UTC instants that can be bucketed into any timezone at query time.
+// DailyStat is still written (see utils/clickHelpers.js) and remains useful as a
+// fast rollup if these queries ever get heavy at higher volume.
 const Click = require('../models/Click');
 const Offer = require('../models/Offer');
+const {
+  resolveTimezone, zonedStartOfDayUtc, zonedEndOfDayUtc,
+  todayInTz, daysAgoInTz,
+} = require('../utils/appTime');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function todayStr() {
-  return new Date().toISOString().split('T')[0];
+/**
+ * Timezone model (same as Everflow): event timestamps are stored in UTC and
+ * bucketed into days at QUERY time using the timezone resolved per request
+ * (?timezone= → Settings.timezone → UTC). Because nothing is baked into stored
+ * data, changing the timezone re-buckets ALL history correctly, including rows
+ * written before this behaviour existed.
+ */
+
+function todayStr(tz) {
+  return todayInTz(tz);
 }
 
-function daysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split('T')[0];
+function daysAgo(n, tz) {
+  return daysAgoInTz(n, tz);
 }
 
 function toObjectId(id) {
@@ -109,20 +124,22 @@ function addRateFields(row) {
   };
 }
 
-/** Common date filter for DailyStat-based queries */
-function dailyStatDateMatch(from, to, offerId, user) {
-  const match = { date: { $gte: from, $lte: to } };
-  if (offerId) match.offerId = toObjectId(offerId);
-  if (user.offerAccess === 'specific') {
-    match.offerId = { $in: user.allowedOffers };
-  }
-  return match;
-}
-
-/** Common date filter for Click-based queries */
-function clickDateMatch(from, to, offerId, user) {
+/**
+ * Common date filter for Click-based queries.
+ *
+ * The from/to strings are LOCAL dates in `tz`; they're converted to the UTC
+ * instants at which that local day starts and ends, so the range lines up with
+ * the caller's calendar day. Previously this did `new Date(from)` (UTC midnight),
+ * which in IST (UTC+5:30) cut the day at 05:30 local — so every click between
+ * 00:00 and 05:29 IST was counted on the PREVIOUS day.
+ *
+ * `field` selects which timestamp to filter on — 'clickedAt' for click metrics,
+ * 'conversionAt' for conversion metrics (conversions belong to the day the
+ * postback landed, not the day the click happened).
+ */
+function clickDateMatch(from, to, offerId, user, tz, field = 'clickedAt') {
   const match = {
-    clickedAt: { $gte: new Date(from), $lte: new Date(to + 'T23:59:59.999Z') },
+    [field]: { $gte: zonedStartOfDayUtc(from, tz), $lte: zonedEndOfDayUtc(to, tz) },
   };
   if (offerId) match.offerId = toObjectId(offerId);
   if (user.offerAccess === 'specific') {
@@ -131,18 +148,82 @@ function clickDateMatch(from, to, offerId, user) {
   return match;
 }
 
+/** Local-day bucket expression for a timestamp field, evaluated in `tz`. */
+function localDay(field, tz) {
+  return { $dateToString: { format: '%Y-%m-%d', date: `$${field}`, timezone: tz } };
+}
+
+/** The click-side metric accumulators shared by the offer and daily reports. */
+function clickMetricAccumulators() {
+  return {
+    grossClicks: { $sum: 1 },
+    uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
+    dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
+    invalidClicks: { $sum: INVALID_CLICKS_EXPR },
+  };
+}
+
+/** Merge click-side and conversion-side aggregation results keyed by _id. */
+function mergeByKey(clickRows, convRows) {
+  const out = new Map();
+  for (const c of clickRows) {
+    out.set(String(c._id), {
+      _id: c._id,
+      grossClicks: c.grossClicks || 0,
+      uniqueClicks: c.uniqueClicks || 0,
+      dupClicks: c.dupClicks || 0,
+      invalidClicks: c.invalidClicks || 0,
+      conversions: 0, revenue: 0, payout: 0,
+      offerName: c.offerName,
+    });
+  }
+  for (const v of convRows) {
+    const key = String(v._id);
+    const row = out.get(key) || {
+      _id: v._id,
+      grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0,
+      conversions: 0, revenue: 0, payout: 0,
+      offerName: v.offerName,
+    };
+    row.conversions = v.conversions || 0;
+    row.revenue = v.revenue || 0;
+    row.payout = v.payout || 0;
+    if (!row.offerName) row.offerName = v.offerName;
+    out.set(key, row);
+  }
+  return [...out.values()];
+}
+
+/** Sort merged rows in JS (the merge happens outside Mongo). */
+function sortRows(rows, sort) {
+  const dir = sort.startsWith('-') ? -1 : 1;
+  const field = sort.replace(/^-/, '');
+  return rows.sort((a, b) => {
+    const av = a[field];
+    const bv = b[field];
+    if (av === undefined && bv === undefined) return 0;
+    // Numeric even when addRateFields stringified it (cvr, margin, cpc, ...)
+    const an = Number(av);
+    const bn = Number(bv);
+    if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * dir;
+    return String(av ?? '').localeCompare(String(bv ?? '')) * dir;
+  });
+}
+
 // ─── 1. CONVERSION REPORT ──────────────────────────────────────────────────
 // Individual conversions from Click where converted: true
 
 exports.conversionReport = async (req, res, next) => {
   try {
     const { from, to, offer_id, sort = '-conversionAt', page = 1, limit = 50 } = req.query;
-    const dateFrom = from || daysAgo(30);
-    const dateTo = to || todayStr();
+    const tz = await resolveTimezone(req);
+    const dateFrom = from || daysAgo(30, tz);
+    const dateTo = to || todayStr(tz);
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+    // Conversions are windowed on conversionAt, not clickedAt
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
     match.converted = true;
 
     // Summary
@@ -160,7 +241,7 @@ exports.conversionReport = async (req, res, next) => {
     const rawSummary = summaryAgg[0] || { conversions: 0, revenue: 0, payout: 0 };
 
     // For summary we also need total clicks in the same date range (not just converted)
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
     const clickSummary = await Click.aggregate([
       { $match: clickMatch },
       {
@@ -190,7 +271,7 @@ exports.conversionReport = async (req, res, next) => {
       { $match: match },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$conversionAt' } },
+          _id: localDay('conversionAt', tz),
           conversions: { $sum: 1 },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -247,141 +328,149 @@ exports.conversionReport = async (req, res, next) => {
 };
 
 // ─── 2. OFFER REPORT ────────────────────────────────────────────────────────
-// Grouped by offer, uses DailyStat. Expand rows include country/device breakdown.
+// Grouped by offer. Aggregated from the raw Click collection (NOT DailyStat) so
+// day buckets honour the requested timezone — DailyStat rows are pre-bucketed in
+// UTC and cannot be re-bucketed after the fact. Expand rows include
+// country/device breakdown, computed from the same raw clicks.
 
 exports.offerReport = async (req, res, next) => {
   try {
     const { from, to, offer_id, sort = '-revenue', page = 1, limit = 50 } = req.query;
-    const dateFrom = from || daysAgo(30);
-    const dateTo = to || todayStr();
+    const tz = await resolveTimezone(req);
+    const dateFrom = from || daysAgo(30, tz);
+    const dateTo = to || todayStr(tz);
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const match = dailyStatDateMatch(dateFrom, dateTo, offer_id, req.user);
+    // Clicks are windowed on clickedAt; conversions on conversionAt.
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'clickedAt');
+    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+    convMatch.converted = true;
 
-    // Summary
-    const summaryAgg = await DailyStat.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: null,
-          grossClicks: { $sum: '$clicks' },
-          uniqueClicks: { $sum: '$uniqueClicks' },
-          dupClicks: { $sum: '$duplicateClicks' },
-          invalidClicks: { $sum: '$blockedClicks' },
-          conversions: { $sum: '$conversions' },
-          revenue: { $sum: '$revenue' },
-          payout: { $sum: '$payout' },
+    const [clicksByOffer, convByOffer] = await Promise.all([
+      Click.aggregate([
+        { $match: clickMatch },
+        { $group: { _id: '$offerId', offerName: { $first: '$offerName' }, ...clickMetricAccumulators() } },
+      ]),
+      Click.aggregate([
+        { $match: convMatch },
+        {
+          $group: {
+            _id: '$offerId',
+            offerName: { $first: '$offerName' },
+            conversions: { $sum: 1 },
+            revenue: { $sum: '$revenue' },
+            payout: { $sum: '$payout' },
+          },
         },
-      },
-    ]);
-    const summary = buildSummary(summaryAgg[0] || {});
-
-    // Chart — by date
-    const chart = await DailyStat.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: '$date',
-          clicks: { $sum: '$clicks' },
-          conversions: { $sum: '$conversions' },
-          revenue: { $sum: '$revenue' },
-          payout: { $sum: '$payout' },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-    const chartData = chart.map(c => ({
-      date: c._id,
-      clicks: c.clicks,
-      conversions: c.conversions,
-      revenue: Number(c.revenue.toFixed(2)),
-      profit: Number((c.revenue - c.payout).toFixed(2)),
-    }));
-
-    // Rows — grouped by offer
-    const sortDir = sort.startsWith('-') ? -1 : 1;
-    const sortField = sort.replace(/^-/, '');
-
-    const countPipeline = [
-      { $match: match },
-      { $group: { _id: '$offerId' } },
-      { $count: 'total' },
-    ];
-    const countRes = await DailyStat.aggregate(countPipeline);
-    const total = countRes[0]?.total || 0;
-
-    const data = await DailyStat.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: '$offerId',
-          offerName: { $first: '$offerName' },
-          grossClicks: { $sum: '$clicks' },
-          uniqueClicks: { $sum: '$uniqueClicks' },
-          dupClicks: { $sum: '$duplicateClicks' },
-          invalidClicks: { $sum: '$blockedClicks' },
-          conversions: { $sum: '$conversions' },
-          revenue: { $sum: '$revenue' },
-          payout: { $sum: '$payout' },
-          // Collect breakdowns for expand
-          _byCountry: { $push: '$byCountry' },
-          _byDevice: { $push: '$byDevice' },
-        },
-      },
-      { $sort: { [sortField]: sortDir } },
-      { $skip: (pageNum - 1) * limitNum },
-      { $limit: limitNum },
+      ]),
     ]);
 
-    const rows = data.map(d => {
-      const row = addRateFields({
-        offerId: d._id,
-        offerName: d.offerName || '—',
-        grossClicks: d.grossClicks,
-        clicks: d.grossClicks - d.invalidClicks,
-        uniqueClicks: d.uniqueClicks,
-        dupClicks: d.dupClicks,
-        invalidClicks: d.invalidClicks,
-        conversions: d.conversions,
-        revenue: d.revenue,
-        payout: d.payout,
-      });
+    const merged = mergeByKey(clicksByOffer, convByOffer);
 
-      // Merge breakdown maps across days
-      const countryMap = {};
-      (d._byCountry || []).forEach(dayMap => {
-        if (dayMap) {
-          const entries = dayMap instanceof Map ? dayMap.entries() : Object.entries(dayMap);
-          for (const [k, v] of entries) {
-            countryMap[k] = (countryMap[k] || 0) + v;
-          }
-        }
-      });
-      const deviceMap = {};
-      (d._byDevice || []).forEach(dayMap => {
-        if (dayMap) {
-          const entries = dayMap instanceof Map ? dayMap.entries() : Object.entries(dayMap);
-          for (const [k, v] of entries) {
-            deviceMap[k] = (deviceMap[k] || 0) + v;
-          }
-        }
-      });
+    // Summary across every offer in range
+    const totals = merged.reduce((a, r) => ({
+      grossClicks: a.grossClicks + r.grossClicks,
+      uniqueClicks: a.uniqueClicks + r.uniqueClicks,
+      dupClicks: a.dupClicks + r.dupClicks,
+      invalidClicks: a.invalidClicks + r.invalidClicks,
+      conversions: a.conversions + r.conversions,
+      revenue: a.revenue + r.revenue,
+      payout: a.payout + r.payout,
+    }), { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, conversions: 0, revenue: 0, payout: 0 });
+    const summary = buildSummary(totals);
 
-      row.expand = {
-        byCountry: Object.entries(countryMap).map(([k, v]) => ({ country: k, clicks: v })).sort((a, b) => b.clicks - a.clicks).slice(0, 20),
-        byDevice: Object.entries(deviceMap).map(([k, v]) => ({ device: k, clicks: v })).sort((a, b) => b.clicks - a.clicks).slice(0, 20),
+    // Chart — by local day across the whole selection
+    const [clicksByDay, convByDay] = await Promise.all([
+      Click.aggregate([
+        { $match: clickMatch },
+        { $group: { _id: localDay('clickedAt', tz), grossClicks: { $sum: 1 } } },
+      ]),
+      Click.aggregate([
+        { $match: convMatch },
+        {
+          $group: {
+            _id: localDay('conversionAt', tz),
+            conversions: { $sum: 1 },
+            revenue: { $sum: '$revenue' },
+            payout: { $sum: '$payout' },
+          },
+        },
+      ]),
+    ]);
+    const dayMap = new Map();
+    for (const c of clicksByDay) dayMap.set(c._id, { date: c._id, clicks: c.grossClicks, conversions: 0, revenue: 0, payout: 0 });
+    for (const v of convByDay) {
+      const row = dayMap.get(v._id) || { date: v._id, clicks: 0, conversions: 0, revenue: 0, payout: 0 };
+      row.conversions = v.conversions; row.revenue = v.revenue; row.payout = v.payout;
+      dayMap.set(v._id, row);
+    }
+    const chartData = [...dayMap.values()]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(c => ({
+        date: c.date,
+        clicks: c.clicks,
+        conversions: c.conversions,
+        revenue: Number(c.revenue.toFixed(2)),
+        profit: Number((c.revenue - c.payout).toFixed(2)),
+      }));
+
+    // Rows — sort + paginate the merged set
+    const total = merged.length;
+    const sorted = sortRows(merged.map(r => addRateFields({
+      offerId: r._id,
+      offerName: r.offerName || '—',
+      grossClicks: r.grossClicks,
+      clicks: r.grossClicks - r.invalidClicks,
+      uniqueClicks: r.uniqueClicks,
+      dupClicks: r.dupClicks,
+      invalidClicks: r.invalidClicks,
+      conversions: r.conversions,
+      revenue: r.revenue,
+      payout: r.payout,
+    })), sort);
+    const pageRows = sorted.slice((pageNum - 1) * limitNum, pageNum * limitNum);
+
+    // Expand data (country + device) for just the offers on this page
+    const pageOfferIds = pageRows.map(r => r.offerId).filter(Boolean);
+    let expandByOffer = new Map();
+    if (pageOfferIds.length) {
+      const expandMatch = { ...clickMatch, offerId: { $in: pageOfferIds } };
+      const [byCountry, byDevice] = await Promise.all([
+        Click.aggregate([
+          { $match: expandMatch },
+          { $group: { _id: { offerId: '$offerId', k: '$country' }, clicks: { $sum: 1 } } },
+        ]),
+        Click.aggregate([
+          { $match: expandMatch },
+          { $group: { _id: { offerId: '$offerId', k: '$device' }, clicks: { $sum: 1 } } },
+        ]),
+      ]);
+      const push = (map, offerId, key, field, value, clicks) => {
+        const id = String(offerId);
+        if (!map.has(id)) map.set(id, { byCountry: [], byDevice: [] });
+        map.get(id)[field].push({ [value]: key || '—', clicks });
       };
-
-      return row;
-    });
+      for (const r of byCountry) push(expandByOffer, r._id.offerId, r._id.k, 'byCountry', 'country', r.clicks);
+      for (const r of byDevice) push(expandByOffer, r._id.offerId, r._id.k, 'byDevice', 'device', r.clicks);
+      for (const v of expandByOffer.values()) {
+        v.byCountry.sort((a, b) => b.clicks - a.clicks);
+        v.byDevice.sort((a, b) => b.clicks - a.clicks);
+        v.byCountry = v.byCountry.slice(0, 20);
+        v.byDevice = v.byDevice.slice(0, 20);
+      }
+    }
+    for (const row of pageRows) {
+      row.expand = expandByOffer.get(String(row.offerId)) || { byCountry: [], byDevice: [] };
+    }
 
     res.json({
       summary,
       chart: chartData,
-      rows,
+      rows: pageRows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
+      timezone: tz,
     });
   } catch (err) {
     next(err);
@@ -389,121 +478,99 @@ exports.offerReport = async (req, res, next) => {
 };
 
 // ─── 3. DAILY REPORT ────────────────────────────────────────────────────────
-// Day-by-day breakdown from DailyStat
+// Day-by-day breakdown, aggregated from raw Clicks in the requested timezone.
 
 exports.dailyReport = async (req, res, next) => {
   try {
     const { from, to, offer_id, sort = '-date', page = 1, limit = 50 } = req.query;
-    const dateFrom = from || daysAgo(30);
-    const dateTo = to || todayStr();
+    const tz = await resolveTimezone(req);
+    const dateFrom = from || daysAgo(30, tz);
+    const dateTo = to || todayStr(tz);
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const match = dailyStatDateMatch(dateFrom, dateTo, offer_id, req.user);
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'clickedAt');
+    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+    convMatch.converted = true;
 
-    // Summary
-    const summaryAgg = await DailyStat.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: null,
-          grossClicks: { $sum: '$clicks' },
-          uniqueClicks: { $sum: '$uniqueClicks' },
-          dupClicks: { $sum: '$duplicateClicks' },
-          invalidClicks: { $sum: '$blockedClicks' },
-          conversions: { $sum: '$conversions' },
-          revenue: { $sum: '$revenue' },
-          payout: { $sum: '$payout' },
+    const [clicksByDay, convByDay] = await Promise.all([
+      Click.aggregate([
+        { $match: clickMatch },
+        { $group: { _id: localDay('clickedAt', tz), ...clickMetricAccumulators() } },
+      ]),
+      Click.aggregate([
+        { $match: convMatch },
+        {
+          $group: {
+            _id: localDay('conversionAt', tz),
+            conversions: { $sum: 1 },
+            revenue: { $sum: '$revenue' },
+            payout: { $sum: '$payout' },
+          },
         },
-      },
-    ]);
-    const summary = buildSummary(summaryAgg[0] || {});
-
-    // Chart — same as rows but sorted asc for chart display
-    const chartAgg = await DailyStat.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: '$date',
-          clicks: { $sum: '$clicks' },
-          conversions: { $sum: '$conversions' },
-          revenue: { $sum: '$revenue' },
-          payout: { $sum: '$payout' },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-    const chartData = chartAgg.map(c => ({
-      date: c._id,
-      clicks: c.clicks,
-      conversions: c.conversions,
-      revenue: Number(c.revenue.toFixed(2)),
-      profit: Number((c.revenue - c.payout).toFixed(2)),
-    }));
-
-    // Rows
-    const sortDir = sort.startsWith('-') ? -1 : 1;
-    const sortField = sort.replace(/^-/, '') === 'date' ? '_id' : sort.replace(/^-/, '');
-
-    const countPipeline = [
-      { $match: match },
-      { $group: { _id: '$date' } },
-      { $count: 'total' },
-    ];
-    const countRes = await DailyStat.aggregate(countPipeline);
-    const total = countRes[0]?.total || 0;
-
-    const data = await DailyStat.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: '$date',
-          grossClicks: { $sum: '$clicks' },
-          uniqueClicks: { $sum: '$uniqueClicks' },
-          dupClicks: { $sum: '$duplicateClicks' },
-          invalidClicks: { $sum: '$blockedClicks' },
-          conversions: { $sum: '$conversions' },
-          revenue: { $sum: '$revenue' },
-          payout: { $sum: '$payout' },
-        },
-      },
-      { $sort: { [sortField]: sortDir } },
-      { $skip: (pageNum - 1) * limitNum },
-      { $limit: limitNum },
+      ]),
     ]);
 
-    const rows = data.map(d => addRateFields({
-      date: d._id,
-      grossClicks: d.grossClicks,
-      clicks: d.grossClicks - d.invalidClicks,
-      uniqueClicks: d.uniqueClicks,
-      dupClicks: d.dupClicks,
-      invalidClicks: d.invalidClicks,
-      conversions: d.conversions,
-      revenue: d.revenue,
-      payout: d.payout,
-    }));
+    const merged = mergeByKey(clicksByDay, convByDay);
+
+    const totals = merged.reduce((a, r) => ({
+      grossClicks: a.grossClicks + r.grossClicks,
+      uniqueClicks: a.uniqueClicks + r.uniqueClicks,
+      dupClicks: a.dupClicks + r.dupClicks,
+      invalidClicks: a.invalidClicks + r.invalidClicks,
+      conversions: a.conversions + r.conversions,
+      revenue: a.revenue + r.revenue,
+      payout: a.payout + r.payout,
+    }), { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, conversions: 0, revenue: 0, payout: 0 });
+    const summary = buildSummary(totals);
+
+    const chartData = [...merged]
+      .sort((a, b) => String(a._id).localeCompare(String(b._id)))
+      .map(c => ({
+        date: c._id,
+        clicks: c.grossClicks,
+        conversions: c.conversions,
+        revenue: Number(c.revenue.toFixed(2)),
+        profit: Number((c.revenue - c.payout).toFixed(2)),
+      }));
+
+    const total = merged.length;
+    const sorted = sortRows(merged.map(r => addRateFields({
+      date: r._id,
+      grossClicks: r.grossClicks,
+      clicks: r.grossClicks - r.invalidClicks,
+      uniqueClicks: r.uniqueClicks,
+      dupClicks: r.dupClicks,
+      invalidClicks: r.invalidClicks,
+      conversions: r.conversions,
+      revenue: r.revenue,
+      payout: r.payout,
+    })), sort === '-date' ? '-date' : sort);
+    const pageRows = sorted.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
     res.json({
       summary,
       chart: chartData,
-      rows,
+      rows: pageRows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
+      timezone: tz,
     });
   } catch (err) {
     next(err);
   }
 };
-
 // ─── 4. HOURLY REPORT ───────────────────────────────────────────────────────
 // From Click collection, $group by hour. Max 7 day range.
 
 exports.hourlyReport = async (req, res, next) => {
   try {
-    const { from, to, offer_id, timezone = 'UTC', sort = '-hour', page = 1, limit = 100 } = req.query;
-    const dateFrom = from || daysAgo(1);
-    const dateTo = to || todayStr();
+    const { from, to, offer_id, sort = '-hour', page = 1, limit = 100 } = req.query;
+    // Explicit ?timezone= wins, else the account default (Settings.timezone)
+    const tz = await resolveTimezone(req);
+    const timezone = tz;
+    const dateFrom = from || daysAgo(1, tz);
+    const dateTo = to || todayStr(tz);
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(500, Math.max(1, parseInt(limit)));
 
@@ -515,7 +582,7 @@ exports.hourlyReport = async (req, res, next) => {
       return res.status(400).json({ error: 'Hourly report supports a maximum of 7 days range' });
     }
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
 
     // Summary from same click data
     const summaryAgg = await Click.aggregate([
@@ -606,12 +673,13 @@ exports.hourlyReport = async (req, res, next) => {
 exports.logReport = async (req, res, next) => {
   try {
     const { from, to, offer_id, status = 'all', search, sort = '-clickedAt', page = 1, limit = 50 } = req.query;
-    const dateFrom = from || daysAgo(7);
-    const dateTo = to || todayStr();
+    const tz = await resolveTimezone(req);
+    const dateFrom = from || daysAgo(7, tz);
+    const dateTo = to || todayStr(tz);
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
 
     // Status filter
     switch (status) {
@@ -648,7 +716,7 @@ exports.logReport = async (req, res, next) => {
     }
 
     // Summary counts
-    const baseMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+    const baseMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
     const summaryAgg = await Click.aggregate([
       { $match: baseMatch },
       {
@@ -742,14 +810,42 @@ exports.logReport = async (req, res, next) => {
 exports.exportCsv = async (req, res, next) => {
   try {
     const { from, to, offer_id, type = 'daily' } = req.query;
-    const dateFrom = from || daysAgo(30);
-    const dateTo = to || todayStr();
+    const tz = await resolveTimezone(req);
+    const dateFrom = from || daysAgo(30, tz);
+    const dateTo = to || todayStr(tz);
+
+    // Helper: same click/conversion split the on-screen reports use, so a CSV
+    // always matches what the user just looked at.
+    const aggregateBy = async (groupExpr, convGroupExpr) => {
+      const cm = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'clickedAt');
+      const vm = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+      vm.converted = true;
+      const [ca, va] = await Promise.all([
+        Click.aggregate([
+          { $match: cm },
+          { $group: { _id: groupExpr, offerName: { $first: '$offerName' }, ...clickMetricAccumulators() } },
+        ]),
+        Click.aggregate([
+          { $match: vm },
+          {
+            $group: {
+              _id: convGroupExpr,
+              offerName: { $first: '$offerName' },
+              conversions: { $sum: 1 },
+              revenue: { $sum: '$revenue' },
+              payout: { $sum: '$payout' },
+            },
+          },
+        ]),
+      ]);
+      return mergeByKey(ca, va);
+    };
 
     let headers, rows, filename;
 
     switch (type) {
       case 'conversion': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
         match.converted = true;
         const data = await Click.find(match).sort({ conversionAt: -1 }).select('clickId offerName conversionAt conversionEvent revenue payout country device source').lean();
         headers = 'Click ID,Offer,Conversion At,Event,Revenue,Payout,Profit,Country,Device,Source';
@@ -758,24 +854,8 @@ exports.exportCsv = async (req, res, next) => {
         break;
       }
       case 'offer': {
-        const match = dailyStatDateMatch(dateFrom, dateTo, offer_id, req.user);
-        const data = await DailyStat.aggregate([
-          { $match: match },
-          {
-            $group: {
-              _id: '$offerId',
-              offerName: { $first: '$offerName' },
-              grossClicks: { $sum: '$clicks' },
-              uniqueClicks: { $sum: '$uniqueClicks' },
-              dupClicks: { $sum: '$duplicateClicks' },
-              invalidClicks: { $sum: '$blockedClicks' },
-              conversions: { $sum: '$conversions' },
-              revenue: { $sum: '$revenue' },
-              payout: { $sum: '$payout' },
-            },
-          },
-          { $sort: { revenue: -1 } },
-        ]);
+        const data = (await aggregateBy('$offerId', '$offerId'))
+          .sort((a, b) => b.revenue - a.revenue);
         headers = 'Offer,Gross Clicks,Clicks,Unique,Dup,Invalid,CV,CVR,Revenue,Payout,Profit,Margin';
         rows = data.map(d => {
           const clicks = d.grossClicks - d.invalidClicks;
@@ -786,12 +866,12 @@ exports.exportCsv = async (req, res, next) => {
         break;
       }
       case 'hourly': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
         const data = await Click.aggregate([
           { $match: match },
           {
             $group: {
-              _id: { $dateToString: { format: '%Y-%m-%d %H:00', date: '$clickedAt' } },
+              _id: { $dateToString: { format: '%Y-%m-%d %H:00', date: '$clickedAt', timezone: tz } },
               grossClicks: { $sum: 1 },
               uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
               conversions: { $sum: { $cond: ['$converted', 1, 0] } },
@@ -807,7 +887,7 @@ exports.exportCsv = async (req, res, next) => {
         break;
       }
       case 'log': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
         const data = await Click.find(match).sort({ clickedAt: -1 }).limit(10000).select('clickId offerName clickedAt ip country device browser os source subId1 isDuplicate isBlocked isBot isVpn blockReason converted revenue payout').lean();
         headers = 'Click ID,Offer,Timestamp,IP,Country,Device,Browser,OS,Source,Sub1,Status,Revenue,Payout,Profit';
         rows = data.map(d => {
@@ -826,24 +906,9 @@ exports.exportCsv = async (req, res, next) => {
         break;
       }
       default: {
-        // daily
-        const match = dailyStatDateMatch(dateFrom, dateTo, offer_id, req.user);
-        const data = await DailyStat.aggregate([
-          { $match: match },
-          {
-            $group: {
-              _id: '$date',
-              grossClicks: { $sum: '$clicks' },
-              uniqueClicks: { $sum: '$uniqueClicks' },
-              dupClicks: { $sum: '$duplicateClicks' },
-              invalidClicks: { $sum: '$blockedClicks' },
-              conversions: { $sum: '$conversions' },
-              revenue: { $sum: '$revenue' },
-              payout: { $sum: '$payout' },
-            },
-          },
-          { $sort: { _id: -1 } },
-        ]);
+        // daily — same Click-based, timezone-bucketed source as the on-screen report
+        const data = (await aggregateBy(localDay('clickedAt', tz), localDay('conversionAt', tz)))
+          .sort((a, b) => String(b._id).localeCompare(String(a._id)));
         headers = 'Date,Gross Clicks,Clicks,Unique,Dup,Invalid,CV,CVR,Revenue,Payout,Profit,Margin';
         rows = data.map(d => {
           const clicks = d.grossClicks - d.invalidClicks;

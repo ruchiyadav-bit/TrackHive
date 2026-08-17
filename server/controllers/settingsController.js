@@ -1,4 +1,5 @@
 const Setting = require('../models/Setting');
+const { clearTimezoneCache } = require('../utils/appTime');
 
 const DEFAULTS = {
   siteName: 'TrackHive',
@@ -36,6 +37,7 @@ exports.update = async (req, res, next) => {
     if (value === undefined) return res.status(400).json({ error: 'value is required' });
 
     const setting = await Setting.setValue(key, value);
+    if (key === 'timezone') clearTimezoneCache();
     res.json({ setting });
   } catch (err) {
     next(err);
@@ -52,6 +54,7 @@ exports.bulkUpdate = async (req, res, next) => {
     const results = [];
     for (const [key, value] of Object.entries(settings)) {
       const setting = await Setting.setValue(key, value);
+      if (key === 'timezone') clearTimezoneCache();
       results.push(setting);
     }
 

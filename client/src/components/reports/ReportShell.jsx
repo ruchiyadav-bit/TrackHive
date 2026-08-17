@@ -179,9 +179,12 @@ export function StatusBadge({ status, row }) {
     if (row.isBot) badges.push('bot');
     if (row.isBlocked) badges.push('blocked');
     if (row.isDuplicate) badges.push('duplicate');
-    if (row.isVpn) badges.push('vpn');
     if (row.converted) badges.push('converted');
+    // Nothing wrong with this click — say so explicitly. VPN is only an
+    // advisory flag (it never blocks), so on its own it must not replace OK,
+    // otherwise a perfectly good click reads as a problem.
     if (!badges.length) badges.push('ok');
+    if (row.isVpn) badges.push('vpn');
     return (
       <span className="inline-flex items-center gap-1">
         {badges.map(b => <Badge key={b} status={b} />)}

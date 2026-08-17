@@ -111,11 +111,22 @@ exports.detectBot = (userAgent) => {
  * Basic VPN/proxy detection via headers
  */
 exports.detectVpn = (req) => {
+  // Header sniffing CANNOT reliably detect a VPN. Two signals that used to be
+  // checked here fire on essentially every request once the app is behind a
+  // load balancer or CDN (which Render is):
+  //   - x-forwarded-for containing a comma: normal whenever there is more than
+  //     one hop, so every single click was flagged VPN
+  //   - `via`: routinely set by CDNs and caches on legitimate traffic
+  // Both are removed. What's left are headers a plain CDN hop does not add.
+  //
+  // This flag is informational only — it never blocks (see utils/trafficFilter.js).
+  // For real VPN/proxy/datacenter detection you need an IP intelligence
+  // dataset (IP2Proxy, IPQualityScore, MaxMind Anonymous IP); header
+  // inspection alone will always be wrong in both directions.
   const indicators = [
-    req.headers['x-forwarded-for']?.includes(','),
-    req.headers['via'],
     req.headers['x-proxy-id'],
     req.headers['proxy-connection'],
+    req.headers['x-anonymous'],
   ];
   return indicators.some(Boolean);
 };

@@ -4,6 +4,7 @@ const Advertiser = require('../models/Advertiser');
 const DailyStat = require('../models/DailyStat');
 const Notification = require('../models/Notification');
 const { updateDailyStats } = require('../utils/clickHelpers');
+const { getReportTimezone, todayInTz, monthStartInTz } = require('../utils/appTime');
 
 /** Thrown when a postback sends a revenue/payout value that isn't a finite number. */
 class BadAmount extends Error {
@@ -247,7 +248,10 @@ async function checkCapsAndNotify(offer) {
     if (!refreshed) return;
 
     const alerts = [];
-    const today = new Date().toISOString().split('T')[0];
+    // Daily/monthly caps must reset at LOCAL midnight, not 00:00 UTC — in IST
+    // (UTC+5:30) a UTC-based reset fired at 05:30 AM local instead of midnight.
+    const tz = await getReportTimezone();
+    const today = todayInTz(tz);
 
     // NOTE: this function used to read offer.dailyCap / offer.dailyRevenueCap /
     // offer.capBehavior — none of which exist on the Offer schema. Every one of
@@ -278,7 +282,7 @@ async function checkCapsAndNotify(offer) {
 
     // Monthly conversion cap
     if (refreshed.monthlyConversionCap > 0) {
-      const monthStart = today.slice(0, 8) + '01';
+      const monthStart = monthStartInTz(tz);
       const agg = await DailyStat.aggregate([
         { $match: { offerId: offer._id, date: { $gte: monthStart, $lte: today } } },
         { $group: { _id: null, conversions: { $sum: '$conversions' } } },
