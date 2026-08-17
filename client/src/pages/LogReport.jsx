@@ -5,6 +5,7 @@ const COLUMNS = [
   { key: 'clickedAt', label: 'Timestamp', align: 'left', sortable: true },
   { key: 'offerName', label: 'Offer', align: 'left', sortable: true },
   { key: 'status', label: 'Status', align: 'left', sortable: false },
+  { key: 'blockReason', label: 'Block Reason', align: 'left', sortable: false },
   { key: 'ip', label: 'IP', align: 'left', sortable: false },
   { key: 'country', label: 'Country', align: 'left', sortable: false },
   { key: 'device', label: 'Device', align: 'left', sortable: false },
@@ -24,7 +25,11 @@ function renderCell(row, key) {
     case 'offerName':
       return <span className="font-medium text-gray-900 truncate max-w-[180px] inline-block text-xs">{row.offerName}</span>;
     case 'status':
-      return <StatusBadge status={row.status} />;
+      return <StatusBadge row={row} />;
+    case 'blockReason':
+      return row.blockReason
+        ? <code className="text-[11px] bg-gray-100 px-1 py-0.5 rounded text-gray-600">{row.blockReason}</code>
+        : <span className="text-gray-300 text-xs">—</span>;
     case 'ip':
       return <code className="text-xs bg-gray-100 px-1 py-0.5 rounded text-gray-700">{row.ip}</code>;
     case 'clickId':
@@ -57,6 +62,7 @@ export default function LogReport() {
           <option value="valid">Valid</option>
           <option value="duplicates">Duplicates</option>
           <option value="blocked">Blocked</option>
+          <option value="blocked_cap">Blocked by cap</option>
           <option value="bots">Bots</option>
           <option value="converted">Converted</option>
         </select>

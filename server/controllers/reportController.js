@@ -28,6 +28,21 @@ function safeDivide(numerator, denominator) {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
+/**
+ * Mongo $cond expression for "Invalid Clicks" on raw Click aggregations.
+ * Frequency-cap blocks (blockReason: 'frequency_cap') are excluded here —
+ * they are still duplicates and count in Dup Clicks, but must NOT also
+ * count as Invalid (Invalid is reserved for bot/geo/device/IP blocks) so
+ * a single click is never counted in both buckets at once.
+ */
+const INVALID_CLICKS_EXPR = {
+  $cond: [
+    { $and: ['$isBlocked', { $ne: ['$blockReason', 'frequency_cap'] }] },
+    1,
+    0,
+  ],
+};
+
 /** Build summary metrics object from raw aggregated numbers */
 function buildSummary(raw) {
   const grossClicks = raw.grossClicks || 0;
@@ -141,7 +156,7 @@ exports.conversionReport = async (req, res, next) => {
           grossClicks: { $sum: 1 },
           uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
-          invalidClicks: { $sum: { $cond: ['$isBlocked', 1, 0] } },
+          invalidClicks: { $sum: INVALID_CLICKS_EXPR },
         },
       },
     ]);
@@ -498,7 +513,7 @@ exports.hourlyReport = async (req, res, next) => {
           grossClicks: { $sum: 1 },
           uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
-          invalidClicks: { $sum: { $cond: ['$isBlocked', 1, 0] } },
+          invalidClicks: { $sum: INVALID_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -528,7 +543,7 @@ exports.hourlyReport = async (req, res, next) => {
           grossClicks: { $sum: 1 },
           uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
-          invalidClicks: { $sum: { $cond: ['$isBlocked', 1, 0] } },
+          invalidClicks: { $sum: INVALID_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -598,6 +613,10 @@ exports.logReport = async (req, res, next) => {
       case 'blocked':
         match.isBlocked = true;
         break;
+      case 'blocked_cap':
+        match.isBlocked = true;
+        match.blockReason = 'frequency_cap';
+        break;
       case 'bots':
         match.isBot = true;
         break;
@@ -625,7 +644,7 @@ exports.logReport = async (req, res, next) => {
           grossClicks: { $sum: 1 },
           uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
-          invalidClicks: { $sum: { $cond: ['$isBlocked', 1, 0] } },
+          invalidClicks: { $sum: INVALID_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -653,7 +672,7 @@ exports.logReport = async (req, res, next) => {
       .lean();
 
     const rows = clicks.map(c => {
-      // Determine status
+      // Determine primary status (used for sorting/legacy single-badge consumers)
       let clickStatus = 'ok';
       if (c.isBot) clickStatus = 'bot';
       else if (c.isBlocked) clickStatus = 'blocked';
@@ -676,6 +695,12 @@ exports.logReport = async (req, res, next) => {
         subId1: c.subId1 || '—',
         subId2: c.subId2 || '—',
         status: clickStatus,
+        // Explicit flags — a click can be BOTH blocked and duplicate at once
+        // (frequency-cap block), so the UI shows both badges together.
+        isDuplicate: !!c.isDuplicate,
+        isBlocked: !!c.isBlocked,
+        isBot: !!c.isBot,
+        isVpn: !!c.isVpn,
         blockReason: c.blockReason || '',
         converted: c.converted || false,
         conversionAt: c.conversionAt || null,
@@ -773,12 +798,15 @@ exports.exportCsv = async (req, res, next) => {
         const data = await Click.find(match).sort({ clickedAt: -1 }).limit(10000).select('clickId offerName clickedAt ip country device browser os source subId1 isDuplicate isBlocked isBot isVpn blockReason converted revenue payout').lean();
         headers = 'Click ID,Offer,Timestamp,IP,Country,Device,Browser,OS,Source,Sub1,Status,Revenue,Payout,Profit';
         rows = data.map(d => {
-          let status = 'OK';
-          if (d.isBot) status = 'BOT';
-          else if (d.isBlocked) status = 'BLOCKED';
-          else if (d.isDuplicate) status = 'DUP';
-          else if (d.isVpn) status = 'VPN';
-          if (d.converted) status = 'CONVERTED';
+          // A click can carry more than one flag at once (e.g. a frequency-cap
+          // block is both BLOCKED and DUP) — join every applicable label.
+          const labels = [];
+          if (d.isBot) labels.push('BOT');
+          if (d.isBlocked) labels.push('BLOCKED');
+          if (d.isDuplicate) labels.push('DUP');
+          if (d.isVpn) labels.push('VPN');
+          if (d.converted) labels.push('CONVERTED');
+          const status = labels.length ? labels.join('+') : 'OK';
           return `${d.clickId},"${d.offerName || ''}",${d.clickedAt?.toISOString() || ''},${d.ip || ''},${d.country || ''},${d.device || ''},${d.browser || ''},${d.os || ''},${d.source || ''},${d.subId1 || ''},${status},${(d.revenue || 0).toFixed(2)},${(d.payout || 0).toFixed(2)},${((d.revenue || 0) - (d.payout || 0)).toFixed(2)}`;
         });
         filename = `log_${dateFrom}_to_${dateTo}.csv`;

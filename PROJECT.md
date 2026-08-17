@@ -54,11 +54,13 @@ trackhive/
 │       ├── components/
 │       │   ├── layout/
 │       │   │   ├── Layout.jsx       # Main layout — sidebar + topbar + content
-│       │   │   ├── Sidebar.jsx      # Navigation — Dashboard, Offers, Advertisers, Reports, Settings
+│       │   │   ├── Sidebar.jsx      # Navigation — Dashboard, Offers, Advertisers, Reports (5 sub-items), Settings
 │       │   │   └── TopBar.jsx       # Header — date, user info, logout
 │       │   ├── offers/
 │       │   │   ├── OfferWizard.jsx  # 5-step offer creation wizard (Everflow-style)
 │       │   │   └── OfferForm.jsx    # Legacy form (unused, kept for reference)
+│       │   ├── reports/
+│       │   │   └── ReportShell.jsx  # Shared report layout — filters, summary, chart, table, pagination
 │       │   └── ui/
 │       │       ├── Toast.jsx        # Toast notification component
 │       │       ├── Skeleton.jsx     # Loading skeleton
@@ -75,8 +77,11 @@ trackhive/
 │       │   ├── Advertisers.jsx      # Advertiser list + CRUD modal
 │       │   ├── AdvertiserDetail.jsx # Single advertiser — postback config, linked offers, stats
 │       │   ├── TrackingDomains.jsx  # Tracking domain management with DNS verify
-│       │   ├── Reports.jsx          # Report tabs — Offer, Daily, Country, Device, SubID
-│       │   ├── ClickReport.jsx      # Click log — individual click records
+│       │   ├── ConversionReport.jsx # Conversion report — individual conversions
+│       │   ├── OfferReport.jsx      # Offer report — grouped by offer with expand rows
+│       │   ├── DailyReport.jsx      # Daily report — day-by-day breakdown
+│       │   ├── HourlyReport.jsx     # Hourly report — hour-by-hour from Click collection
+│       │   ├── LogReport.jsx        # Click log — raw clicks with status badges + filters
 │       │   ├── Settings.jsx         # App settings — general, tracking, notifications, users
 │       │   └── UserManagement.jsx   # User list — Super Admin can change roles
 │       └── utils/
@@ -115,7 +120,7 @@ trackhive/
 │   │   ├── postbackController.js    # Conversion postback handler + cap alerts
 │   │   ├── bulkImportController.js  # CSV bulk import (coming soon — stub)
 │   │   ├── dashboardController.js   # Dashboard stats, chart data, top offers, geo
-│   │   ├── reportController.js      # Reports — offer, daily, subID, geo, device, CSV export
+│   │   ├── reportController.js      # Reports — conversion, offer, daily, hourly, log + CSV export
 │   │   ├── userController.js        # User CRUD (admin only)
 │   │   ├── settingsController.js    # App settings get/update
 │   │   ├── activityController.js    # Activity log listing
@@ -133,7 +138,7 @@ trackhive/
 │   │   ├── postback.js              # GET / and POST / (public — conversion postback)
 │   │   ├── networkPresets.js        # GET / — network macro config (public)
 │   │   ├── dashboard.js             # Summary, chart, top offers, recent clicks, geo
-│   │   ├── reports.js               # Offer, daily, subID, geo, device + CSV + bulk import
+│   │   ├── reports.js               # Conversion, offer, daily, hourly, log + CSV + bulk import
 │   │   ├── users.js                 # User CRUD (admin)
 │   │   ├── settings.js              # Settings get/update
 │   │   ├── notifications.js         # Notifications CRUD + unread count
@@ -381,11 +386,19 @@ MongoDB-based per-IP click cap — no Redis required.
 | `ipCapWindow` | `'24h'` | Time window: `24h`, `48h`, `7d`, `30d`, `custom`, `forever` |
 | `ipCapWindowHours` | `24` | Custom window in hours (used when ipCapWindow = `'custom'`) |
 | `uniqueIdentifier` | `'ip_ua'` | How to identify unique visitors: `ip`, `ip_ua`, `ip_ua_ref` |
-| `fallbackUrl` | (empty) | Redirect duplicates here instead of the landing page |
+| `fallbackUrl` | (empty) | Used when `onDuplicate` is `fallback` |
+| `onDuplicate` | `'block'` (new offers) | What happens once the cap is hit: `block`, `fallback`, or `redirect` |
 
 **Why `ip_ua` is the default:** Mobile carriers like Jio and Airtel use CGNAT, where thousands of users share the same IP address. Using IP alone would falsely cap legitimate users. `ip_ua` (IP + User Agent) dramatically reduces false positives because each phone has a unique UA string.
 
-**Duplicate handling:** Duplicate clicks are still redirected — the user is never shown a block page. If a `fallbackUrl` is set, duplicates go there; otherwise they go to the normal landing page. The click is recorded with `isDuplicate: true` for reporting purposes.
+**On-duplicate behaviour (`onDuplicate`):** Configurable per offer, in `server/utils/clickHelpers.js` (`resolveDuplicateAction`) and used by both `/click` (`clickController.js`) and `/go/:slug` (`smartLinkController.js`):
+- `block` (default for new offers) — the visitor sees the shared "Access Restricted" page (`server/utils/blockedPage.js`), `HTTP 429`, `Cache-Control: no-store`, no TrackHive branding and no mention of *why* they were blocked. No redirect happens. The click is still logged (`isDuplicate: true, isBlocked: true, blockReason: 'frequency_cap'`) so blocks are visible in reporting.
+- `fallback` — the click redirects to `offer.fallbackUrl`. If `onDuplicate` is `fallback` but `fallbackUrl` is empty, the system falls back to `block` and logs a console warning (`resolveDuplicateAction`).
+- `redirect` — legacy behaviour: the click redirects to the normal offer URL, only marked `isDuplicate: true`.
+
+**Dup vs. Invalid accounting:** A frequency-cap block is both `isDuplicate: true` and `isBlocked: true` on the Click document, but it counts **only** in **Dup. Clicks** in reporting — never in **Invalid Clicks**. Invalid Clicks stays reserved for bot/geo/device/IP blocks (the ones that set `isBlocked: true` for a reason other than `frequency_cap`). This is enforced in `server/utils/clickHelpers.js#updateDailyStats` (skips `blockedClicks` increment when `blockReason === 'frequency_cap'`) and in the raw-Click report aggregations in `reportController.js` (`INVALID_CLICKS_EXPR` excludes `blockReason: 'frequency_cap'`), so a block is never counted in both buckets at once.
+
+**Migration:** Offers created before this feature don't have `onDuplicate` stored in Mongo. Run `npm run migrate:on-duplicate` (from `server/`) once after deploying — it sets `onDuplicate: 'redirect'` on every offer missing the field, preserving the pre-existing "always redirect" behaviour so live traffic isn't suddenly blocked. Only offers created after the migration default to `block`.
 
 **Previous implementation removed:** The old `enableDuplicateFilter`, `uniqueSessionIdentifier`, `sessionDuration`, and `sessionDurationUnit` fields have been removed and replaced by this frequency cap system.
 
@@ -422,18 +435,68 @@ Real-time overview of your tracking operation.
 
 Last verified: 2026-08-17
 
-### 11. Reports
+### 11. Reports (Everflow-Style)
 
-Detailed analytics with date range filtering and CSV export.
+Five dedicated report pages, each using a shared `ReportShell.jsx` component. Reports do **not** auto-load — the user sets filters and clicks **"Run Report"**. All endpoints return a unified response shape.
 
-| Report | Groups by | Metrics |
-|--------|-----------|---------|
-| Offer Report | Offer | Clicks, unique clicks, conversions, revenue, payout, profit, CR, EPC |
-| Daily Report | Date | Same metrics, day-by-day |
-| Country Report | Country | Clicks, conversions, revenue, payout, profit, CR |
-| Device Report | Device/OS/Browser | Clicks, conversions, revenue |
-| SubID Report | sub1-sub5 / source | Clicks, conversions, revenue, payout, profit, CR, EPC |
-| Click Log | Individual clicks | Full click details — IP, UA, country, device, sub IDs, conversion |
+**Shared ReportShell layout:**
+- Breadcrumb header ("Reports / Offer Report")
+- Filter bar: date range (from/to), offer dropdown, per-report extras (status filter on Logs, search on Logs)
+- **Run Report** button (blue, right-aligned) — nothing loads until clicked
+- Collapsible summary cards grid (15 metrics, default open)
+- Collapsible performance chart (Recharts LineChart — clicks, conversions, revenue, profit — default **closed**)
+- Data table with sortable columns, expandable rows (Offer Report), sticky header, page number pagination
+- CSV export button (appears after first run)
+
+**Unified API response shape:**
+```json
+{
+  "summary": {
+    "grossClicks": 1000, "clicks": 950, "uniqueClicks": 800,
+    "dupClicks": 100, "invalidClicks": 50, "totalCv": 25, "cv": 25,
+    "cvr": "2.632", "cpc": "0.42", "cpa": "16.00",
+    "rpc": "0.21", "rpa": "8.00",
+    "revenue": "400.00", "payout": "200.00", "profit": "200.00",
+    "margin": "50.000"
+  },
+  "chart": [{ "date": "2026-08-01", "clicks": 100, "conversions": 5, "revenue": 50.00, "profit": 25.00 }],
+  "rows": [...],
+  "pagination": { "page": 1, "limit": 50, "total": 150, "pages": 3 }
+}
+```
+
+**Metric definitions:**
+| Metric | Formula | Format |
+|--------|---------|--------|
+| Gross Clicks | All clicks including dup/blocked/bot | Number |
+| Clicks | grossClicks − invalidClicks | Number |
+| Unique | Non-duplicate clicks | Number |
+| Dup | Duplicate clicks | Number |
+| Invalid | Blocked clicks (bot + VPN + other blocks) | Number |
+| CV | Conversion count | Number |
+| CVR | conversions / clicks × 100 | 3 decimals % |
+| CPC | revenue / clicks | 2 decimals $ |
+| CPA | revenue / conversions | 2 decimals $ |
+| RPC | profit / clicks | 2 decimals $ |
+| RPA | profit / conversions | 2 decimals $ |
+| Profit | revenue − payout | 2 decimals $ |
+| Margin | profit / revenue × 100 | 3 decimals % |
+
+Zero division = 0 for all rate metrics.
+
+**Five reports:**
+
+| Report | Route | Data Source | Key Columns | Special |
+|--------|-------|-------------|-------------|---------|
+| Conversion | `/reports/conversion` | Click (converted:true) | Timestamp, Offer, Event, Click ID, Country, Device, Source, Revenue, Payout, Profit | Individual conversion rows |
+| Offer | `/reports/offer` | DailyStat grouped by offerId | Offer, Gross, Clicks, Uniq, Dup, Invalid, CV, CVR, Revenue, Payout, Profit, Margin | **Expandable rows** with byCountry + byDevice sub-tables |
+| Daily | `/reports/daily` | DailyStat grouped by date | Date, Gross, Clicks, Uniq, Dup, Invalid, CV, CVR, Revenue, Payout, Profit, Margin | Standard day-by-day |
+| Hourly | `/reports/hourly` | Click collection $group by hour | Hour, Gross, Clicks, Uniq, Dup, Invalid, CV, CVR, Revenue, Payout, Profit | **Max 7-day range**, timezone-aware via `$dateToString` |
+| Logs | `/reports/logs` | Click collection (raw) | Timestamp, Offer, Status, Block Reason, IP, Country, Device, OS, Browser, Source, Sub1, Revenue, Payout, Profit | Status column shows **all** applicable badges together (e.g. BLOCKED + DUP for a frequency-cap block), status filter dropdown (All/Valid/Duplicates/Blocked/**Blocked by cap**/Bots/Converted), search by IP or Click ID |
+
+**Sidebar navigation:** Reports dropdown shows exactly 5 items: Conversion, Offer, Daily, Hourly, Logs (icons: ArrowRightLeft, FileText, Calendar, Clock, ScrollText).
+
+**CSV export:** Filename format: `<type>_<from>_to_<to>.csv`. Columns match the visible report columns. Export endpoint: `GET /api/reports/export?type=<conversion|offer|daily|hourly|log>&from=&to=&offer_id=`
 
 Last verified: 2026-08-17
 
@@ -794,16 +857,29 @@ GET  /api/dashboard/geo                  → Geo breakdown
 
 ### Reports
 ```
-GET  /api/reports/offer-report           → Offer performance report
-GET  /api/reports/daily-report           → Daily breakdown
-GET  /api/reports/subid-report           → SubID/source report
-GET  /api/reports/geo-report             → Country report
-GET  /api/reports/device-report          → Device/OS/browser report
-GET  /api/reports/export                 → CSV download
+GET  /api/reports/conversion             → Conversion report (individual conversions)
+GET  /api/reports/offer                  → Offer report (grouped by offer, with expand data)
+GET  /api/reports/daily                  → Daily report (day-by-day breakdown)
+GET  /api/reports/hourly                 → Hourly report (from Click, max 7 days, timezone-aware)
+GET  /api/reports/log                    → Log report (raw clicks with status filters)
+GET  /api/reports/export?type=<type>     → CSV download (type: conversion|offer|daily|hourly|log)
 POST /api/reports/bulk-import            → CSV bulk import (stub — coming soon)
 POST /api/reports/bulk-confirm           → Confirm bulk import
 GET  /api/reports/import-template        → Download import template CSV
 ```
+
+**Common query params for all report endpoints:**
+| Param | Default | Description |
+|-------|---------|-------------|
+| `from` | 30 days ago | Start date (YYYY-MM-DD) |
+| `to` | today | End date (YYYY-MM-DD) |
+| `offer_id` | (all) | Filter by offer |
+| `sort` | varies | Sort field, prefix `-` for descending |
+| `page` | 1 | Page number |
+| `limit` | 50 | Rows per page (max 200, hourly max 500) |
+
+**Hourly-specific params:** `timezone` (default: UTC) — passed to `$dateToString` for proper hour grouping.
+**Log-specific params:** `status` (all|valid|duplicates|blocked|bots|converted), `search` (IP or clickId regex).
 
 ### Users (admin only)
 ```
@@ -1144,7 +1220,7 @@ The `enableClickToConversionTime`, `clickToConversionValue`, and `clickToConvers
 ### 6. checkGeoTarget field name mismatch
 `checkGeoTarget()` in `clickHelpers.js` reads `offer.geoTargets` and checks for `geoMode === 'blacklist'`, but the Offer model uses `geoCountries` (not `geoTargets`) and `geoMode` enum values `'include'` / `'exclude'` (not `'blacklist'`). This means geo targeting on smart links may not work correctly until these field names are aligned.
 
-### 7. SubID report data availability
-`bySubId` exists in the DailyStat schema (`Map of Number`) and `updateDailyStats()` increments `bySubId.{sub1}` when `subId1` is provided. The data is being collected. However, if the SubID report query reads from a different source or aggregation, verify it returns data.
+### 7. SubID/Country/Device standalone reports removed
+The old SubID, Country, and Device standalone reports have been removed. Country and device breakdowns are now available as expand rows inside the Offer Report (per-offer byCountry + byDevice sub-tables from DailyStat Maps). The `bySubId`, `byCountry`, `byDevice`, `byBrowser`, `byOs`, `bySource` Maps in DailyStat are still populated by `updateDailyStats()` and available for future use.
 
 Last verified: 2026-08-17

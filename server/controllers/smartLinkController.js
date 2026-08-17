@@ -5,7 +5,9 @@ const {
   generateClickId, parseVisitorInfo,
   checkDuplicate, detectBot, detectVpn, isIpBlocked,
   checkGeoTarget, replaceMacros, updateDailyStats,
+  resolveDuplicateAction,
 } = require('../utils/clickHelpers');
+const { sendBlockedPage: sendBlockedResponse, DEFAULT_BLOCKED_MESSAGE } = require('../utils/blockedPage');
 
 exports.handleSmartLink = async (req, res) => {
   const startTime = Date.now();
@@ -60,30 +62,17 @@ exports.handleSmartLink = async (req, res) => {
       return sendBlockedPage(res, offer, 'GEO restricted');
     }
 
-    // Duplicate/IP cap check (MongoDB-based)
-    const cap = Number(offer.ipCap) || 0;
-    const isDuplicate = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
-
-    if (isDuplicate) {
-      // Handle duplicate based on offer config
-      if (offer.duplicateAction === 'blocked_page') {
-        await logClick(offer, clickId, visitor, req, { isDuplicate: true, isBlocked: true, blockReason: 'duplicate', startTime });
-        return sendBlockedPage(res, offer);
-      }
-      if (offer.duplicateAction === 'fallback' && offer.fallbackUrl) {
-        await logClick(offer, clickId, visitor, req, { isDuplicate: true, isBlocked: true, blockReason: 'duplicate_fallback', redirectUrl: offer.fallbackUrl, startTime });
-        return res.redirect(302, offer.fallbackUrl);
-      }
-      // redirect_anyway — continue below
-    }
-
-    // Build redirect URL with macros
-    const redirectUrl = replaceMacros(landingUrl, {
-      clickId, offerId: offer._id.toString(),
+    // Build redirect URL with macros (needed even for the 'block' path so the
+    // Click record can still show what the visitor would have hit)
+    const subIds = {
       subId1: req.query.sub1 || req.query.subid || '',
       subId2: req.query.sub2 || '', subId3: req.query.sub3 || '',
       subId4: req.query.sub4 || '', subId5: req.query.sub5 || '',
       source: req.query.source || '',
+    };
+    const redirectUrl = replaceMacros(landingUrl, {
+      clickId, offerId: offer._id.toString(),
+      ...subIds,
       ...visitor,
     });
 
@@ -93,24 +82,53 @@ exports.handleSmartLink = async (req, res) => {
       return res.status(500).send('Invalid redirect URL');
     }
 
-    console.log(`[SMART-LINK] ${clickId} (${slug}) → ${redirectUrl}`);
+    // Duplicate/IP cap check (MongoDB-based)
+    const cap = Number(offer.ipCap) || 0;
+    const isDuplicate = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
+
+    // ── On-duplicate behaviour: block | fallback | redirect ──
+    let finalUrl = redirectUrl;
+    let isBlocked = false;
+    let blockReason = '';
+
+    if (isDuplicate) {
+      const action = resolveDuplicateAction(offer);
+      if (action === 'block') {
+        isBlocked = true;
+        blockReason = 'frequency_cap';
+      } else if (action === 'fallback') {
+        finalUrl = offer.fallbackUrl;
+      }
+      // action === 'redirect' → finalUrl stays as the normal offer URL
+    }
+
+    if (isBlocked) {
+      // Block: no redirect, but still log the click so blocks are visible in reporting.
+      await logClick(offer, clickId, visitor, req, {
+        isDuplicate: true, isVpn, isSmartLink: true, smartLinkSlug: slug,
+        isBlocked: true, blockReason: 'frequency_cap', redirectUrl: '', startTime,
+      });
+      return sendBlockedResponse(res, { statusCode: 429 });
+    }
+
+    console.log(`[SMART-LINK] ${clickId} (${slug}) → ${finalUrl}`);
 
     // Log click
     await logClick(offer, clickId, visitor, req, {
       isDuplicate, isVpn, isSmartLink: true, smartLinkSlug: slug,
-      redirectUrl, startTime,
+      redirectUrl: finalUrl, startTime,
     });
 
     // Redirect — use redirectMode from model ('302', '301', 'meta_refresh', 'javascript')
     switch (offer.redirectMode) {
       case 'meta_refresh':
-        return res.send(`<html><head><meta http-equiv="refresh" content="0;url=${redirectUrl}"></head><body></body></html>`);
+        return res.send(`<html><head><meta http-equiv="refresh" content="0;url=${finalUrl}"></head><body></body></html>`);
       case 'javascript':
-        return res.send(`<html><body><script>window.location.href="${redirectUrl}";</script></body></html>`);
+        return res.send(`<html><body><script>window.location.href="${finalUrl}";</script></body></html>`);
       case '301':
-        return res.redirect(301, redirectUrl);
+        return res.redirect(301, finalUrl);
       default:
-        return res.redirect(302, redirectUrl);
+        return res.redirect(302, finalUrl);
     }
   } catch (err) {
     console.error('Smart link error:', err);
@@ -151,6 +169,7 @@ async function logClick(offer, clickId, visitor, req, opts = {}) {
       click: true,
       isDuplicate: opts.isDuplicate,
       isBlocked: opts.isBlocked,
+      blockReason: opts.blockReason,
       isBot: opts.isBot,
       country: visitor.country,
       device: visitor.device,
@@ -167,14 +186,9 @@ async function logClick(offer, clickId, visitor, req, opts = {}) {
   }
 }
 
-function sendBlockedPage(res, offer, reason) {
-  const message = offer.blockedPageMessage || 'This offer is no longer available.';
-  res.status(403).send(`
-    <html><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f9fafb">
-      <div style="text-align:center;max-width:400px;padding:40px">
-        <h2 style="color:#1f2937">Access Restricted</h2>
-        <p style="color:#6b7280">${message}</p>
-      </div>
-    </body></html>
-  `);
+// Used for bot/geo/IP blocks — respects the offer's custom blockedPageMessage.
+// Frequency-cap blocks go through sendBlockedResponse() directly with the
+// generic default message instead (never reveal *why* the visitor was blocked).
+function sendBlockedPage(res, offer) {
+  sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
 }

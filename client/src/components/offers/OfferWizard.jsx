@@ -35,7 +35,7 @@ const defaultForm = {
  enableCaps: false, dailyClickCap: 0, dailyConversionCap: 0, monthlyConversionCap: 0, totalCap: 0,
  offerVisibility: 'public', enableTerms: false, termsContent: '',
  ipCap: 0, ipCapWindow: '24h', ipCapWindowHours: 24,
- uniqueIdentifier: 'ip_ua', fallbackUrl: '', redirectMode: '302',
+ uniqueIdentifier: 'ip_ua', onDuplicate: 'block', fallbackUrl: '', redirectMode: '302',
  // Step 3
  baseEventName: 'Base', firePartnerPostback: false, manualApproveConversions: false,
  allowDuplicateConversions: false,
@@ -272,8 +272,24 @@ function StepTracking({ form, setField, trackingDomains, errors = {} }) {
  <Select label="Unique by" value={form.uniqueIdentifier} onChange={v => setField('uniqueIdentifier', v)}
  options={[{ value: 'ip', label: 'IP only' }, { value: 'ip_ua', label: 'IP + User Agent (recommended)' }, { value: 'ip_ua_ref', label: 'IP + User Agent + Referer' }]} />
  <p className="text-xs text-gray-400 -mt-2">IP + UA recommended — pure IP blocks different users behind the same carrier IP (Jio/Airtel CGNAT).</p>
+
+ <Select label="On Duplicate" value={form.onDuplicate || 'block'} onChange={v => setField('onDuplicate', v)}
+ options={[
+ { value: 'block', label: 'Block (no redirect)' },
+ { value: 'fallback', label: 'Send to fallback URL' },
+ { value: 'redirect', label: 'Redirect anyway (count as duplicate)' },
+ ]} />
+ <p className="text-xs text-gray-400 -mt-2">
+ {form.onDuplicate === 'fallback' && 'Duplicate clicks will be redirected to the fallback URL.'}
+ {form.onDuplicate === 'redirect' && 'The user still reaches the offer, but the click is marked duplicate and excluded from the unique count.'}
+ {(!form.onDuplicate || form.onDuplicate === 'block') && 'From the cap+1 click onward, the visitor sees an "Access Restricted" page. No redirect happens.'}
+ </p>
+
+ {form.onDuplicate === 'fallback' ? (
+ <Input label="Fallback URL" required value={form.fallbackUrl} onChange={v => setField('fallbackUrl', v)} placeholder="https://example.com/sorry" error={errors.fallbackUrl} />
+ ) : (
  <Input label="Fallback URL (optional)" value={form.fallbackUrl} onChange={v => setField('fallbackUrl', v)} placeholder="https://example.com/sorry" />
- <p className="text-xs text-gray-400 -mt-2">Leave empty to redirect to the original landing page. Set a URL to send duplicate clicks there instead.</p>
+ )}
  </div>
  )}
 
@@ -490,6 +506,9 @@ export default function OfferWizard({ offerId }) {
  }
  if (s === 1) {
  if (!form.landingPageUrl?.trim()) errs.landingPageUrl = 'Landing page URL is required';
+ if (Number(form.ipCap) > 0 && form.onDuplicate === 'fallback' && !form.fallbackUrl?.trim()) {
+ errs.fallbackUrl = 'Fallback URL is required when On Duplicate is set to "Send to fallback URL"';
+ }
  }
  setErrors(errs);
  return Object.keys(errs).length === 0;

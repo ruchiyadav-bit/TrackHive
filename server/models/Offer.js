@@ -64,6 +64,15 @@ const offerSchema = new mongoose.Schema(
       default: 'ip_ua',
     },
     fallbackUrl: String,                                   // redirect here on duplicate (if set)
+    onDuplicate: {
+      // What happens on the (cap+1)th click from the same visitor:
+      //   block    → no redirect, "Access Restricted" page (default for new offers)
+      //   fallback → redirect to fallbackUrl (falls back to 'block' if fallbackUrl is empty)
+      //   redirect → redirect to the normal offer URL, click marked isDuplicate only
+      type: String,
+      enum: ['block', 'fallback', 'redirect'],
+      default: 'block',
+    },
     redirectMode: {
       type: String,
       enum: ['302', '301', 'meta_refresh', 'javascript'],

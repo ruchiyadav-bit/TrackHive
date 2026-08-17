@@ -79,6 +79,21 @@ exports.checkDuplicate = async (Click, offer, visitor) => {
 };
 
 /**
+ * Resolve the effective on-duplicate action for an offer.
+ * Falls back to 'block' if the offer predates the field, and falls back
+ * from 'fallback' to 'block' if no fallbackUrl is configured (logging a
+ * warning so the misconfiguration is visible in the server logs).
+ */
+exports.resolveDuplicateAction = (offer) => {
+  let action = offer.onDuplicate || 'block';
+  if (action === 'fallback' && !offer.fallbackUrl) {
+    console.warn(`[FREQ-CAP] Offer ${offer._id} has onDuplicate='fallback' but no fallbackUrl set — falling back to 'block'`);
+    action = 'block';
+  }
+  return action;
+};
+
+/**
  * Basic bot detection via user-agent patterns
  */
 exports.detectBot = (userAgent) => {
@@ -157,7 +172,10 @@ exports.updateDailyStats = async (DailyStat, offerId, offerName, data) => {
   if (data.click) {
     update.$inc.clicks = 1;
     if (!data.isDuplicate) update.$inc.uniqueClicks = 1;
-    if (data.isBlocked) update.$inc.blockedClicks = 1;
+    // Frequency-cap blocks are still duplicates and count in Dup. Clicks —
+    // they must NOT also count in Invalid Clicks (reserved for bot/geo/
+    // device/IP blocks), otherwise the same click would be counted twice.
+    if (data.isBlocked && data.blockReason !== 'frequency_cap') update.$inc.blockedClicks = 1;
     if (data.isBot) update.$inc.botClicks = 1;
     if (data.isDuplicate) update.$inc.duplicateClicks = 1;
 

@@ -146,23 +146,49 @@ function PerformanceChart({ chart, collapsed, onToggle }) {
 
 // ─── Status Badge ───────────────────────────────────────────────────────────
 
-export function StatusBadge({ status }) {
-  const styles = {
-    ok: 'bg-green-100 text-green-700',
-    converted: 'bg-blue-100 text-blue-700',
-    duplicate: 'bg-amber-100 text-amber-700',
-    blocked: 'bg-red-100 text-red-700',
-    bot: 'bg-red-100 text-red-700',
-    vpn: 'bg-orange-100 text-orange-700',
-  };
-  const labels = {
-    ok: 'OK', converted: 'CONV', duplicate: 'DUP', blocked: 'BLOCKED', bot: 'BOT', vpn: 'VPN',
-  };
+const BADGE_STYLES = {
+  ok: 'bg-green-100 text-green-700',
+  converted: 'bg-blue-100 text-blue-700',
+  duplicate: 'bg-amber-100 text-amber-700',
+  blocked: 'bg-red-100 text-red-700',
+  bot: 'bg-red-100 text-red-700',
+  vpn: 'bg-orange-100 text-orange-700',
+};
+const BADGE_LABELS = {
+  ok: 'OK', converted: 'CONV', duplicate: 'DUP', blocked: 'BLOCKED', bot: 'BOT', vpn: 'VPN',
+};
+
+function Badge({ status }) {
   return (
-    <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${styles[status] || styles.ok}`}>
-      {labels[status] || status}
+    <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${BADGE_STYLES[status] || BADGE_STYLES.ok}`}>
+      {BADGE_LABELS[status] || status}
     </span>
   );
+}
+
+/**
+ * A click can carry more than one flag at once — most notably a
+ * frequency-cap block, which is both BLOCKED and DUP. When passed a row
+ * with explicit boolean flags (isBlocked/isDuplicate/isBot/isVpn/converted),
+ * every applicable badge is rendered side by side. Falls back to a single
+ * `status` string for older callers.
+ */
+export function StatusBadge({ status, row }) {
+  if (row) {
+    const badges = [];
+    if (row.isBot) badges.push('bot');
+    if (row.isBlocked) badges.push('blocked');
+    if (row.isDuplicate) badges.push('duplicate');
+    if (row.isVpn) badges.push('vpn');
+    if (row.converted) badges.push('converted');
+    if (!badges.length) badges.push('ok');
+    return (
+      <span className="inline-flex items-center gap-1">
+        {badges.map(b => <Badge key={b} status={b} />)}
+      </span>
+    );
+  }
+  return <Badge status={status} />;
 }
 
 // ─── Main ReportShell ───────────────────────────────────────────────────────

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "seed": "node utils/seedAdmin.js"
+    "seed": "node utils/seedAdmin.js",
+    "migrate:on-duplicate": "node scripts/migrateOnDuplicate.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

@@ -3,7 +3,9 @@ const Click = require('../models/Click');
 const DailyStat = require('../models/DailyStat');
 const {
   generateClickId, parseVisitorInfo, checkDuplicate, replaceMacros, updateDailyStats,
+  resolveDuplicateAction,
 } = require('../utils/clickHelpers');
+const { sendBlockedPage } = require('../utils/blockedPage');
 
 /**
  * Handle direct click tracking: GET /click?offer_id=xxx&sub1=...
@@ -32,13 +34,19 @@ exports.handleClick = async (req, res) => {
     const visitor = parseVisitorInfo(req);
     const clickId = generateClickId();
 
+    const subIds = {
+      subId1: req.query.sub1 || req.query.subid || '',
+      subId2: req.query.sub2 || '',
+      subId3: req.query.sub3 || '',
+      subId4: req.query.sub4 || '',
+      subId5: req.query.sub5 || '',
+      source: req.query.source || '',
+    };
+
     // Build redirect URL
     const redirectUrl = replaceMacros(landingUrl, {
       clickId, offerId: offer._id.toString(),
-      subId1: req.query.sub1 || req.query.subid || '',
-      subId2: req.query.sub2 || '', subId3: req.query.sub3 || '',
-      subId4: req.query.sub4 || '', subId5: req.query.sub5 || '',
-      source: req.query.source || '',
+      ...subIds,
       ...visitor,
     });
 
@@ -54,14 +62,34 @@ exports.handleClick = async (req, res) => {
       ? await checkDuplicate(Click, offer, visitor)
       : false;
 
-    // Duplicate? Still redirect (never show block page), use fallback URL if set
-    const finalUrl = (isDup && offer.fallbackUrl) ? offer.fallbackUrl : redirectUrl;
+    // ── On-duplicate behaviour: block | fallback | redirect ──
+    let finalUrl = redirectUrl;
+    let isBlocked = false;
+    let blockReason = '';
 
-    // ── REDIRECT FIRST — DB writes happen after the response is sent ──
-    // redirectMode values from model: '301', '302', 'meta_refresh', 'javascript'
-    const statusCode = offer.redirectMode === '301' ? 301 : 302;
-    console.log(`[CLICK] ${clickId}${isDup ? ' (dup)' : ''} → ${finalUrl}`);
-    res.redirect(statusCode, finalUrl);
+    if (isDup) {
+      const action = resolveDuplicateAction(offer);
+      if (action === 'block') {
+        isBlocked = true;
+        blockReason = 'frequency_cap';
+      } else if (action === 'fallback') {
+        finalUrl = offer.fallbackUrl;
+      }
+      // action === 'redirect' → finalUrl stays as the normal offer URL
+    }
+
+    // ── Send the response FIRST — DB writes happen after ──
+    if (isBlocked) {
+      // Block: no redirect at all, but the click is still logged below so
+      // the number of blocks is visible in reporting.
+      console.log(`[CLICK] ${clickId} (dup, blocked) offer=${offer._id}`);
+      sendBlockedPage(res, { statusCode: 429 });
+    } else {
+      // redirectMode values from model: '301', '302', 'meta_refresh', 'javascript'
+      const statusCode = offer.redirectMode === '301' ? 301 : 302;
+      console.log(`[CLICK] ${clickId}${isDup ? ' (dup)' : ''} → ${finalUrl}`);
+      res.redirect(statusCode, finalUrl);
+    }
 
     // Fire-and-forget: log click + update stats in the background
     setImmediate(async () => {
@@ -71,14 +99,11 @@ exports.handleClick = async (req, res) => {
           offerId: offer._id,
           offerName: offer.name,
           ...visitor,
-          subId1: req.query.sub1 || req.query.subid || '',
-          subId2: req.query.sub2 || '',
-          subId3: req.query.sub3 || '',
-          subId4: req.query.sub4 || '',
-          subId5: req.query.sub5 || '',
-          source: req.query.source || '',
+          ...subIds,
           isDuplicate: isDup,
-          redirectUrl: finalUrl,
+          isBlocked,
+          blockReason,
+          redirectUrl: isBlocked ? '' : finalUrl,
           redirectType: offer.redirectMode || '302',
           responseTimeMs: Date.now() - startTime,
           clickedAt: new Date(),
@@ -89,12 +114,14 @@ exports.handleClick = async (req, res) => {
           updateDailyStats(DailyStat, offer._id, offer.name, {
             click: true,
             isDuplicate: isDup,
+            isBlocked,
+            blockReason,
             country: visitor.country,
             device: visitor.device,
             browser: visitor.browser,
             os: visitor.os,
-            source: req.query.source,
-            subId1: req.query.sub1 || req.query.subid,
+            source: subIds.source,
+            subId1: subIds.subId1,
           }),
           Offer.updateOne({ _id: offer._id }, { $inc: { totalClicks: 1 } }),
         ]);

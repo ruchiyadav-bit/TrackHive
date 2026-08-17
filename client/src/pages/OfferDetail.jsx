@@ -271,7 +271,7 @@ export default function OfferDetail() {
  <InfoRow label="Redirect Mode" value={offer.redirectMode || '302'} />
  <InfoRow label="Frequency Cap" value={
  Number(offer.ipCap) > 0
-   ? `${offer.ipCap} clicks / ${
+   ? `${offer.ipCap} clicks per IP / ${
        offer.ipCapWindow === 'custom'
          ? `${offer.ipCapWindowHours}h`
          : offer.ipCapWindow || '24h'
@@ -279,10 +279,14 @@ export default function OfferDetail() {
        offer.uniqueIdentifier === 'ip' ? 'IP' :
        offer.uniqueIdentifier === 'ip_ua_ref' ? 'IP + UA + Ref' :
        'IP + UA'
-     })`
+     }) — ${
+       offer.onDuplicate === 'fallback' ? 'Fallback' :
+       offer.onDuplicate === 'redirect' ? 'Redirect' :
+       'Block'
+     }`
    : 'Unlimited'
  } />
- {Number(offer.ipCap) > 0 && offer.fallbackUrl && (
+ {Number(offer.ipCap) > 0 && offer.onDuplicate === 'fallback' && offer.fallbackUrl && (
    <InfoRow label="Fallback URL" value={offer.fallbackUrl} />
  )}
  </div>
