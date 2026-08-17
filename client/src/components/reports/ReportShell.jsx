@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   ChevronDown, ChevronRight, ChevronLeft, Download, Play,
   Search, SlidersHorizontal, BarChart3, X,
@@ -202,12 +202,16 @@ export default function ReportShell({
   columns,
   endpoint,
   defaultSort = '',
-  defaultDays = 30,
+  // 0 = today only. Reports open on today's data instead of an empty
+  // "click Run Report" screen.
+  defaultDays = 0,
   renderCell,
   renderExpandRow,
   extraFilters,
   extraParams = {},
   hideChart = false,
+  // > 0 turns on silent background polling (used by the click log)
+  autoRefreshMs = 0,
 }) {
   // State
   const [data, setData] = useState(null);
@@ -224,6 +228,8 @@ export default function ReportShell({
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [chartCollapsed, setChartCollapsed] = useState(true); // default CLOSED
   const [searchText, setSearchText] = useState('');
+  const [autoRefresh, setAutoRefresh] = useState(autoRefreshMs > 0);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   // Load offers on first render
   if (!offersLoaded) {
@@ -233,9 +239,15 @@ export default function ReportShell({
       .catch(() => {});
   }
 
-  // Fetch report
-  const fetchReport = useCallback(async (p = 1) => {
-    setLoading(true);
+  // extraParams is a fresh object literal on every parent render, so it can't
+  // be a hook dependency directly — it would retrigger forever. Key on its
+  // serialised contents instead.
+  const extraKey = JSON.stringify(extraParams);
+
+  // Fetch report. `silent` skips the loading state so a background refresh
+  // doesn't blank the table the user is reading.
+  const fetchReport = useCallback(async (p = 1, { silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const params = { from, to, page: p, sort: sortKey, ...extraParams };
       if (offerId) params.offer_id = offerId;
@@ -244,17 +256,46 @@ export default function ReportShell({
       setData(res.data);
       setPage(p);
       setHasRun(true);
-      setExpandedRows(new Set());
+      setLastUpdated(new Date());
+      if (!silent) setExpandedRows(new Set());
     } catch (err) {
       console.error('Report error:', err);
-      setData(null);
+      if (!silent) setData(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [from, to, offerId, sortKey, endpoint, extraParams, searchText]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to, offerId, sortKey, endpoint, extraKey, searchText]);
 
   const handleRun = () => fetchReport(1);
   const handlePageChange = (newPage) => fetchReport(newPage);
+
+  // Keep the newest fetchReport/page in refs so the polling interval below
+  // doesn't need them as dependencies (which would restart it constantly).
+  const fetchRef = useRef(fetchReport);
+  const pageRef = useRef(page);
+  useEffect(() => { fetchRef.current = fetchReport; }, [fetchReport]);
+  useEffect(() => { pageRef.current = page; }, [page]);
+
+  // Run once on mount so the report opens with data already on screen.
+  // Filter changes still go through the Run Report button.
+  const didAutoRun = useRef(false);
+  useEffect(() => {
+    if (didAutoRun.current) return;
+    didAutoRun.current = true;
+    fetchRef.current(1);
+  }, []);
+
+  // Background polling — silent, keeps the current page, pauses when the tab
+  // is hidden so a background tab isn't hammering the API.
+  useEffect(() => {
+    if (!autoRefreshMs || !autoRefresh) return undefined;
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      fetchRef.current(pageRef.current, { silent: true });
+    }, autoRefreshMs);
+    return () => clearInterval(id);
+  }, [autoRefreshMs, autoRefresh]);
 
   const handleSort = (key) => {
     const newSort = sortKey === `-${key}` ? key : `-${key}`;
@@ -300,6 +341,26 @@ export default function ReportShell({
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold text-gray-900">{title}</h1>
           <div className="flex items-center gap-2">
+            {autoRefreshMs > 0 && (
+              <label className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoRefresh}
+                  onChange={e => setAutoRefresh(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                <span className={`w-1.5 h-1.5 rounded-full ${autoRefresh ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
+                Live
+                <span className="text-gray-400">
+                  {autoRefresh ? `${Math.round(autoRefreshMs / 1000)}s` : 'off'}
+                </span>
+              </label>
+            )}
+            {lastUpdated && (
+              <span className="text-[11px] text-gray-400">
+                Updated {lastUpdated.toLocaleTimeString()}
+              </span>
+            )}
             {hasRun && (
               <button
                 onClick={handleExport}
@@ -365,7 +426,7 @@ export default function ReportShell({
       {!hasRun && !loading && (
         <div className="bg-white rounded-lg border border-gray-200 p-16 text-center">
           <BarChart3 size={36} className="mx-auto text-gray-300 mb-3" />
-          <p className="text-gray-500 text-sm">Set your filters and click <strong>Run Report</strong></p>
+          <p className="text-gray-500 text-sm">Adjust your filters and click <strong>Run Report</strong></p>
         </div>
       )}
 

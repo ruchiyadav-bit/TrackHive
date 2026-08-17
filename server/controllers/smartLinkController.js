@@ -14,11 +14,13 @@ exports.handleSmartLink = async (req, res) => {
 
   try {
     const { slug } = req.params;
+    // .lean() — every field below is read-only, so skip Mongoose document
+    // hydration on the hot path.
     const offer = await Offer.findOne({
       smartLinkSlug: slug,
       smartLinkEnabled: true,
       status: { $in: ['active'] },
-    });
+    }).lean();
 
     if (!offer) {
       return res.status(404).send(`
@@ -104,30 +106,45 @@ exports.handleSmartLink = async (req, res) => {
       `blocked=${isBlocked} reason=${blockReason || '-'} → ${isBlocked ? '(blocked page)' : finalUrl}`
     );
 
-    // Log every click first — blocked ones too, so blocks stay visible in reporting.
-    await logClick(offer, clickId, visitor, req, {
-      isDuplicate, isBot: filter.isBot, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
-      isBlocked, blockReason, redirectUrl: finalUrl, startTime,
-    });
-
+    // ── RESPOND FIRST, THEN WRITE ──────────────────────────────────────────
+    // This used to `await logClick()` BEFORE responding, which blocked every
+    // visitor on three sequential DB round-trips (Click.save → updateDailyStats
+    // → Offer.updateOne) before they were redirected. /click already used the
+    // redirect-first pattern; /go/:slug now matches it, so the user leaves in
+    // ~1 DB call instead of ~4.
     if (isBlocked) {
       // 429 for a frequency-cap block, 403 for a targeting block.
-      return blockReason === 'frequency_cap'
-        ? sendBlockedResponse(res, { statusCode: 429 })
-        : sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
+      if (blockReason === 'frequency_cap') {
+        sendBlockedResponse(res, { statusCode: 429 });
+      } else {
+        sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
+      }
+    } else {
+      // redirectMode from model: '302', '301', 'meta_refresh', 'javascript'
+      switch (offer.redirectMode) {
+        case 'meta_refresh':
+          res.send(`<html><head><meta http-equiv="refresh" content="0;url=${finalUrl}"></head><body></body></html>`);
+          break;
+        case 'javascript':
+          res.send(`<html><body><script>window.location.href="${finalUrl}";</script></body></html>`);
+          break;
+        case '301':
+          res.redirect(301, finalUrl);
+          break;
+        default:
+          res.redirect(302, finalUrl);
+      }
     }
 
-    // Redirect — use redirectMode from model ('302', '301', 'meta_refresh', 'javascript')
-    switch (offer.redirectMode) {
-      case 'meta_refresh':
-        return res.send(`<html><head><meta http-equiv="refresh" content="0;url=${finalUrl}"></head><body></body></html>`);
-      case 'javascript':
-        return res.send(`<html><body><script>window.location.href="${finalUrl}";</script></body></html>`);
-      case '301':
-        return res.redirect(301, finalUrl);
-      default:
-        return res.redirect(302, finalUrl);
-    }
+    // Fire-and-forget: log the click + update stats after the response is sent.
+    // Blocked clicks are logged too, so blocks stay visible in reporting.
+    setImmediate(() => {
+      logClick(offer, clickId, visitor, req, {
+        isDuplicate, isBot: filter.isBot, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
+        isBlocked, blockReason, redirectUrl: finalUrl, startTime,
+      }).catch(err => console.error('Smart link background write error:', err));
+    });
+    return;
   } catch (err) {
     console.error('Smart link error:', err);
     res.status(500).send('Internal server error');
@@ -162,23 +179,23 @@ async function logClick(offer, clickId, visitor, req, opts = {}) {
     });
     await click.save();
 
-    // Update daily stats
-    await updateDailyStats(DailyStat, offer._id, offer.name, {
-      click: true,
-      isDuplicate: opts.isDuplicate,
-      isBlocked: opts.isBlocked,
-      blockReason: opts.blockReason,
-      isBot: opts.isBot,
-      country: visitor.country,
-      device: visitor.device,
-      browser: visitor.browser,
-      os: visitor.os,
-      source: req.query.source,
-      subId1: req.query.sub1 || req.query.subid,
-    });
-
-    // Update offer totals
-    await Offer.updateOne({ _id: offer._id }, { $inc: { totalClicks: 1 } });
+    // These two are independent — run them together rather than back-to-back.
+    await Promise.all([
+      updateDailyStats(DailyStat, offer._id, offer.name, {
+        click: true,
+        isDuplicate: opts.isDuplicate,
+        isBlocked: opts.isBlocked,
+        blockReason: opts.blockReason,
+        isBot: opts.isBot,
+        country: visitor.country,
+        device: visitor.device,
+        browser: visitor.browser,
+        os: visitor.os,
+        source: req.query.source,
+        subId1: req.query.sub1 || req.query.subid,
+      }),
+      Offer.updateOne({ _id: offer._id }, { $inc: { totalClicks: 1 } }),
+    ]);
   } catch (err) {
     console.error('Failed to log click:', err);
   }

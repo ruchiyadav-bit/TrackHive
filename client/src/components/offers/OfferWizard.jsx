@@ -605,6 +605,25 @@ export default function OfferWizard({ offerId }) {
  </div>
  <div className="flex items-center gap-3">
  <button type="button" onClick={() => navigate('/offers')} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700">Cancel</button>
+
+ {/* Editing an existing offer: save from ANY step. Previously the only
+     save was "Create Offer" on step 5, so changing one field on step 2
+     meant clicking Next three times to commit it. */}
+ {offerId ? (
+ <>
+ {!isLastStep && (
+ <button type="button" onClick={goNext}
+ className="flex items-center gap-1 px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50">
+ Next <ChevronRight size={16} />
+ </button>
+ )}
+ <button type="button" onClick={() => save(false)} disabled={saving}
+ className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+ <Check size={14} /> {saving ? 'Updating...' : 'Update Offer'}
+ </button>
+ </>
+ ) : (
+ <>
  <button type="button" onClick={() => save(true)} disabled={saving}
  className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
  <Save size={14} /> Save Draft
@@ -619,6 +638,8 @@ export default function OfferWizard({ offerId }) {
  className="flex items-center gap-1 px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
  Next <ChevronRight size={16} />
  </button>
+ )}
+ </>
  )}
  </div>
  </div>

@@ -85,7 +85,8 @@ export default function LogReport() {
       endpoint="/reports/log"
       columns={COLUMNS}
       defaultSort="-clickedAt"
-      defaultDays={7}
+      defaultDays={0}
+      autoRefreshMs={12000}
       renderCell={renderCell}
       extraFilters={extraFilters}
       extraParams={{ status: statusFilter, search: searchText }}

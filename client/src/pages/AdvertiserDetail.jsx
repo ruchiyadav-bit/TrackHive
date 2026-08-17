@@ -480,9 +480,11 @@ export default function AdvertiserDetail() {
       {/* Edit Modal — same as Advertisers.jsx modal */}
       {showEditModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Edit Advertiser</h2>
-            <div className="space-y-4">
+          <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] flex flex-col">
+            <h2 className="text-lg font-semibold text-gray-900 px-6 pt-6 pb-4 shrink-0">Edit Advertiser</h2>
+            {/* Only the form scrolls — the action bar below stays pinned, so
+                Save Changes is reachable without scrolling to the bottom. */}
+            <div className="space-y-4 px-6 overflow-y-auto flex-1">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Advertiser Name *</label>
                 <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -554,7 +556,7 @@ export default function AdvertiserDetail() {
                   rows={3} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-y" />
               </div>
             </div>
-            <div className="flex justify-end gap-3 mt-6">
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 shrink-0 bg-white rounded-b-xl">
               <button onClick={() => setShowEditModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
               <button onClick={saveEdit} disabled={!form.name?.trim()}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">

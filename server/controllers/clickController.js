@@ -20,7 +20,9 @@ exports.handleClick = async (req, res) => {
       return res.status(400).json({ error: 'offer_id is required' });
     }
 
-    const offer = await Offer.findOne({ _id: offerId, status: 'active' });
+    // .lean() — every field below is read-only, so skip Mongoose document
+    // hydration on the hot path.
+    const offer = await Offer.findOne({ _id: offerId, status: 'active' }).lean();
     if (!offer) {
       return res.status(404).json({ error: 'Offer not found or inactive' });
     }
