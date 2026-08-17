@@ -2,17 +2,18 @@ const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
 const {
-  offerReport, dailyReport, subIdReport, geoReport, deviceReport, exportCsv,
+  conversionReport, offerReport, dailyReport, hourlyReport, logReport, exportCsv,
 } = require('../controllers/reportController');
 const {
   bulkImport, bulkConfirm, importTemplate,
 } = require('../controllers/bulkImportController');
 
-router.get('/offer-report', auth, offerReport);
-router.get('/daily-report', auth, dailyReport);
-router.get('/subid-report', auth, subIdReport);
-router.get('/geo-report', auth, geoReport);
-router.get('/device-report', auth, deviceReport);
+// Reports
+router.get('/conversion', auth, conversionReport);
+router.get('/offer', auth, offerReport);
+router.get('/daily', auth, dailyReport);
+router.get('/hourly', auth, hourlyReport);
+router.get('/log', auth, logReport);
 router.get('/export', auth, exportCsv);
 
 // Bulk Import

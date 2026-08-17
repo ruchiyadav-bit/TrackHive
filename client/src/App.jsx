@@ -8,9 +8,12 @@ import Offers from './pages/Offers';
 import OfferNew from './pages/OfferNew';
 import OfferEdit from './pages/OfferEdit';
 import OfferDetail from './pages/OfferDetail';
-import Reports from './pages/Reports';
+import ConversionReport from './pages/ConversionReport';
+import OfferReport from './pages/OfferReport';
+import DailyReport from './pages/DailyReport';
+import HourlyReport from './pages/HourlyReport';
+import LogReport from './pages/LogReport';
 import Settings from './pages/Settings';
-import ClickReport from './pages/ClickReport';
 import UserManagement from './pages/UserManagement';
 import Advertisers from './pages/Advertisers';
 import AdvertiserDetail from './pages/AdvertiserDetail';
@@ -74,9 +77,11 @@ export default function App() {
         <Route path="/advertisers" element={<Advertisers />} />
         <Route path="/advertisers/new" element={<Advertisers />} />
         <Route path="/advertisers/:id" element={<AdvertiserDetail />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/reports/*" element={<Reports />} />
-        <Route path="/reports/clicks" element={<ClickReport />} />
+        <Route path="/reports/conversion" element={<ConversionReport />} />
+        <Route path="/reports/offer" element={<OfferReport />} />
+        <Route path="/reports/daily" element={<DailyReport />} />
+        <Route path="/reports/hourly" element={<HourlyReport />} />
+        <Route path="/reports/logs" element={<LogReport />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/settings/*" element={<Settings />} />
         <Route path="/settings/tracking-domains" element={<TrackingDomains />} />

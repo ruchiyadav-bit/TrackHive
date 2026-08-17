@@ -4,6 +4,7 @@ import {
   LayoutDashboard, FileText, BarChart3, Settings,
   ChevronDown, ChevronRight, PanelLeftClose, PanelLeft,
   Plus, Users, Globe, MousePointerClick, Calendar, Monitor, Megaphone,
+  Clock, ArrowRightLeft, ScrollText,
 } from 'lucide-react';
 
 const navItems = [
@@ -35,11 +36,11 @@ const navItems = [
     icon: BarChart3,
     path: '/reports',
     children: [
-      { label: 'Offer Report', path: '/reports/offers', icon: FileText },
-      { label: 'Daily Report', path: '/reports/daily', icon: Calendar },
-      { label: 'Country Report', path: '/reports/geo', icon: Globe },
-      { label: 'Device Report', path: '/reports/device', icon: Monitor },
-      { label: 'Click Log', path: '/reports/clicks', icon: MousePointerClick },
+      { label: 'Conversion', path: '/reports/conversion', icon: ArrowRightLeft },
+      { label: 'Offer', path: '/reports/offer', icon: FileText },
+      { label: 'Daily', path: '/reports/daily', icon: Calendar },
+      { label: 'Hourly', path: '/reports/hourly', icon: Clock },
+      { label: 'Logs', path: '/reports/logs', icon: ScrollText },
     ],
   },
   {
