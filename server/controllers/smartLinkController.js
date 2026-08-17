@@ -73,11 +73,14 @@ exports.handleSmartLink = async (req, res) => {
     let isDuplicate = false;
 
     if (isBlocked) {
-      // Targeting block: redirect to fallbackUrl if set, otherwise blocked page.
-      // Still logged as isBlocked: true either way (counts as Invalid Click).
-      if (offer.fallbackUrl) finalUrl = offer.fallbackUrl;
+      // Targeting block (bot / ip_blocked / geo / device) — ALWAYS shows the
+      // blocked page, never redirects. `fallbackUrl` belongs to the Frequency
+      // Cap section of the wizard and applies ONLY to onDuplicate='fallback'.
+      finalUrl = '';
     } else {
-      // ── 6: Frequency cap — last, the only check that hits the DB ──
+      // ── Frequency cap — last, the only check that hits the DB.
+      // cap === 0 short-circuits: no DB query, and the onDuplicate branch below
+      // is never entered, so a disabled cap can never block or redirect.
       const cap = Number(offer.ipCap) || 0;
       isDuplicate = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
 
@@ -86,6 +89,7 @@ exports.handleSmartLink = async (req, res) => {
         if (action === 'block') {
           isBlocked = true;
           blockReason = 'frequency_cap';
+          finalUrl = '';
         } else if (action === 'fallback') {
           finalUrl = offer.fallbackUrl;
         }
@@ -94,34 +98,24 @@ exports.handleSmartLink = async (req, res) => {
     }
 
     console.log(
-      `[SMART-LINK] ${clickId} (${slug}) dup=${isDuplicate} onDuplicate=${offer.onDuplicate || 'block'} ` +
-      `fallbackUrl=${offer.fallbackUrl || '(none)'} blocked=${isBlocked} reason=${blockReason || '-'} → ` +
-      `${isBlocked && !offer.fallbackUrl ? '(blocked page)' : finalUrl}`
+      `[SMART-LINK] ${clickId} (${slug}) device=${visitor.device}/${visitor.os}/${visitor.browser} ` +
+      `country=${visitor.country} ipCap=${Number(offer.ipCap) || 0} dup=${isDuplicate} ` +
+      `onDuplicate=${offer.onDuplicate || 'block'} fallbackUrl=${offer.fallbackUrl || '(none)'} ` +
+      `blocked=${isBlocked} reason=${blockReason || '-'} → ${isBlocked ? '(blocked page)' : finalUrl}`
     );
 
-    if (isBlocked && blockReason === 'frequency_cap') {
-      // onDuplicate='block' never redirects, even if a fallbackUrl is set.
-      await logClick(offer, clickId, visitor, req, {
-        isDuplicate: true, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
-        isBlocked: true, blockReason: 'frequency_cap', redirectUrl: '', startTime,
-      });
-      return sendBlockedResponse(res, { statusCode: 429 });
-    }
-
-    if (isBlocked && !offer.fallbackUrl) {
-      // Targeting block (bot/geo/device/ip) with no fallback configured.
-      await logClick(offer, clickId, visitor, req, {
-        isDuplicate: false, isBot: filter.isBot, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
-        isBlocked: true, blockReason, redirectUrl: '', startTime,
-      });
-      return sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
-    }
-
-    // Log click (covers: normal pass-through, targeting-block-with-fallback, dup-fallback, dup-redirect)
+    // Log every click first — blocked ones too, so blocks stay visible in reporting.
     await logClick(offer, clickId, visitor, req, {
       isDuplicate, isBot: filter.isBot, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
       isBlocked, blockReason, redirectUrl: finalUrl, startTime,
     });
+
+    if (isBlocked) {
+      // 429 for a frequency-cap block, 403 for a targeting block.
+      return blockReason === 'frequency_cap'
+        ? sendBlockedResponse(res, { statusCode: 429 })
+        : sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
+    }
 
     // Redirect — use redirectMode from model ('302', '301', 'meta_refresh', 'javascript')
     switch (offer.redirectMode) {

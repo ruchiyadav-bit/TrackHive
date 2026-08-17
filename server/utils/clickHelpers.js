@@ -185,12 +185,21 @@ exports.updateDailyStats = async (DailyStat, offerId, offerName, data) => {
     if (data.isBot) update.$inc.botClicks = 1;
     if (data.isDuplicate) update.$inc.duplicateClicks = 1;
 
-    if (data.country) update.$inc[`byCountry.${data.country}`] = 1;
-    if (data.device) update.$inc[`byDevice.${data.device}`] = 1;
-    if (data.browser) update.$inc[`byBrowser.${data.browser}`] = 1;
-    if (data.os) update.$inc[`byOs.${data.os}`] = 1;
-    if (data.source) update.$inc[`bySource.${data.source}`] = 1;
-    if (data.subId1) update.$inc[`bySubId.${data.subId1}`] = 1;
+    // Breakdown-map keys. `source` and `subId1` come straight from the click
+    // query string, and /click is mounted before mongoSanitize(), so they are
+    // fully attacker-controlled. A '.' in a key makes Mongo treat it as a nested
+    // path (writing an object into a Map-of-Number, which then fails to hydrate
+    // and makes the WHOLE day's breakdown read back as undefined), and a leading
+    // '$' makes Mongo reject the update outright — which also killed the
+    // totalClicks increment sharing that Promise.all.
+    const mapKey = (v) => String(v).replace(/[.$]/g, '_').slice(0, 64);
+
+    if (data.country) update.$inc[`byCountry.${mapKey(data.country)}`] = 1;
+    if (data.device) update.$inc[`byDevice.${mapKey(data.device)}`] = 1;
+    if (data.browser) update.$inc[`byBrowser.${mapKey(data.browser)}`] = 1;
+    if (data.os) update.$inc[`byOs.${mapKey(data.os)}`] = 1;
+    if (data.source) update.$inc[`bySource.${mapKey(data.source)}`] = 1;
+    if (data.subId1) update.$inc[`bySubId.${mapKey(data.subId1)}`] = 1;
   }
 
   if (data.conversion) {
@@ -208,13 +217,13 @@ exports.updateDailyStats = async (DailyStat, offerId, offerName, data) => {
     { upsert: true, new: true }
   );
 
-  // Recalculate derived fields
-  if (stat.clicks > 0) {
-    stat.cr = stat.conversions / stat.clicks * 100;
-    stat.epc = stat.revenue / stat.clicks;
-    stat.rpc = stat.profit / stat.clicks;
-    await stat.save();
-  }
+  // The derived cr/epc/rpc fields used to be recomputed here and written back
+  // with a second, non-atomic stat.save(). That was a lost-update race (two
+  // concurrent clicks would each compute from their own snapshot and the slower
+  // one would overwrite the faster one's value, drifting permanently low) AND a
+  // second DB round-trip on the click hot path. Nothing reads these fields —
+  // every report computes its own rates from the raw sums — so the write is
+  // dropped. Compute them on read if they are ever needed.
 
   return stat;
 };

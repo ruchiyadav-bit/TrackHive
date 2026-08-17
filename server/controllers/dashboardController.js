@@ -105,7 +105,9 @@ exports.getTopOffers = async (req, res, next) => {
         },
       },
       { $sort: { [sortField]: -1 } },
-      { $limit: parseInt(limit) },
+      // Clamp: $limit: 0 and $limit: NaN both make MongoDB throw (500), and an
+      // unbounded ?limit=100000 would dump every offer.
+      { $limit: Math.min(Math.max(parseInt(limit) || 10, 1), 100) },
     ]);
 
     res.json({ offers: topOffers });

@@ -69,6 +69,22 @@ exports.updateUser = async (req, res, next) => {
       return res.status(403).json({ error: 'Cannot modify super admin' });
     }
 
+    // Same guard createUser has. Without it, anyone who can reach this handler
+    // could bypass the create-side check by PUT-ing role:'admin' onto their own
+    // account — and the auth middleware re-reads the role from the DB on every
+    // request, so the escalation takes effect immediately.
+    if (data.role && data.role !== user.role) {
+      if (req.user._id.toString() === user._id.toString()) {
+        return res.status(403).json({ error: 'You cannot change your own role' });
+      }
+      if (data.role === 'super_admin') {
+        return res.status(403).json({ error: 'Cannot grant the super admin role' });
+      }
+      if (data.role === 'admin' && req.user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Only super admins can grant the admin role' });
+      }
+    }
+
     Object.assign(user, data);
     await user.save();
 

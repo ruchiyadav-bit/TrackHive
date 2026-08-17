@@ -75,10 +75,17 @@ exports.createOffer = async (req, res, next) => {
 
 exports.getOffer = async (req, res, next) => {
   try {
+    // The advertiser's postbackSecret is the ONLY thing gating /postback — anyone
+    // holding it can forge conversions with arbitrary revenue. This route is
+    // `auth` only (no authorize()), so it must not hand the secret to every
+    // logged-in user; viewers get it stripped.
+    const canSeeSecret = ['super_admin', 'admin', 'manager'].includes(req.user.role);
+    const advertiserFields = canSeeSecret ? 'name postbackSecret network' : 'name network';
+
     const offer = await Offer.findOne({
       _id: req.params.id,
       status: { $ne: 'deleted' },
-    }).populate('advertiser', 'name postbackSecret network').populate('trackingDomain', 'domain status');
+    }).populate('advertiser', advertiserFields).populate('trackingDomain', 'domain status');
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
 
     if (req.user.offerAccess === 'specific' &&

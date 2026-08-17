@@ -68,12 +68,16 @@ exports.handleClick = async (req, res) => {
     let isDup = false;
 
     if (isBlocked) {
-      // Targeting block: redirect to fallbackUrl if the offer has one,
-      // otherwise show the blocked page. Still logged as isBlocked: true
-      // either way, so it counts as an Invalid Click.
-      if (offer.fallbackUrl) finalUrl = offer.fallbackUrl;
+      // Targeting block (bot / ip_blocked / geo / device) — ALWAYS shows the
+      // blocked page, never redirects. `fallbackUrl` belongs to the Frequency
+      // Cap section of the wizard and applies ONLY to onDuplicate='fallback';
+      // reusing it here made targeting-blocked traffic silently redirect to the
+      // duplicate-fallback URL, which looked like targeting wasn't working.
+      finalUrl = '';
     } else {
-      // ── 6: Frequency cap — last, the only check that hits the DB ──
+      // ── Frequency cap — last, the only check that hits the DB.
+      // cap === 0 short-circuits: no DB query, and the onDuplicate branch below
+      // is never entered, so a disabled cap can never block or redirect.
       const cap = Number(offer.ipCap) || 0;
       isDup = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
 
@@ -82,6 +86,7 @@ exports.handleClick = async (req, res) => {
         if (action === 'block') {
           isBlocked = true;
           blockReason = 'frequency_cap';
+          finalUrl = '';
         } else if (action === 'fallback') {
           finalUrl = offer.fallbackUrl;
         }
@@ -89,22 +94,18 @@ exports.handleClick = async (req, res) => {
       }
     }
 
-    // Debug log — confirms exactly what onDuplicate/fallback value was read
-    // for this offer and what decision was made from it.
+    // Debug log — shows every input to the decision so nothing has to be guessed.
     console.log(
-      `[CLICK] ${clickId} dup=${isDup} onDuplicate=${offer.onDuplicate || 'block'} ` +
-      `fallbackUrl=${offer.fallbackUrl || '(none)'} blocked=${isBlocked} reason=${blockReason || '-'} → ` +
-      `${isBlocked && !offer.fallbackUrl ? '(blocked page)' : finalUrl}`
+      `[CLICK] ${clickId} device=${visitor.device}/${visitor.os}/${visitor.browser} ` +
+      `country=${visitor.country} ipCap=${Number(offer.ipCap) || 0} dup=${isDup} ` +
+      `onDuplicate=${offer.onDuplicate || 'block'} fallbackUrl=${offer.fallbackUrl || '(none)'} ` +
+      `blocked=${isBlocked} reason=${blockReason || '-'} → ${isBlocked ? '(blocked page)' : finalUrl}`
     );
 
     // ── Send the response FIRST — DB writes happen after ──
-    if (isBlocked && blockReason === 'frequency_cap') {
-      // onDuplicate='block' never redirects, even if a fallbackUrl is set
-      // (that case is handled by onDuplicate='fallback' instead).
-      sendBlockedPage(res, { statusCode: 429 });
-    } else if (isBlocked && !offer.fallbackUrl) {
-      // Targeting block (bot/geo/device/ip) with no fallback configured.
-      sendBlockedPage(res, { statusCode: 403 });
+    if (isBlocked) {
+      // 429 for a frequency-cap block, 403 for a targeting block.
+      sendBlockedPage(res, { statusCode: blockReason === 'frequency_cap' ? 429 : 403 });
     } else {
       // redirectMode values from model: '301', '302', 'meta_refresh', 'javascript'
       const statusCode = offer.redirectMode === '301' ? 301 : 302;
@@ -125,7 +126,7 @@ exports.handleClick = async (req, res) => {
           isDuplicate: isDup,
           isBlocked,
           blockReason,
-          redirectUrl: (isBlocked && blockReason === 'frequency_cap') ? '' : finalUrl,
+          redirectUrl: finalUrl,
           redirectType: offer.redirectMode || '302',
           responseTimeMs: Date.now() - startTime,
           clickedAt: new Date(),
@@ -188,15 +189,20 @@ exports.listClicks = async (req, res, next) => {
       if (to) filter.clickedAt.$lte = new Date(to);
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // Clamp both: ?page=0 gave a negative skip (Mongo throws → 500) and
+    // ?limit=0 means "no limit" in Mongo, which dumped the entire collection.
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 100, 1), 500);
+    const skip = (pageNum - 1) * limitNum;
+
     const [clicks, total] = await Promise.all([
-      Click.find(filter).sort({ clickedAt: -1 }).skip(skip).limit(parseInt(limit)),
+      Click.find(filter).sort({ clickedAt: -1 }).skip(skip).limit(limitNum),
       Click.countDocuments(filter),
     ]);
 
     res.json({
       clicks,
-      pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / parseInt(limit)) },
+      pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
     });
   } catch (err) {
     next(err);

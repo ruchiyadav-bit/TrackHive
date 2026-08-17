@@ -5,12 +5,28 @@ const DailyStat = require('../models/DailyStat');
 const Notification = require('../models/Notification');
 const { updateDailyStats } = require('../utils/clickHelpers');
 
+/** Thrown when a postback sends a revenue/payout value that isn't a finite number. */
+class BadAmount extends Error {
+  constructor(field, value) {
+    super(`Invalid ${field}: "${value}" is not a number`);
+    this.field = field;
+    this.value = value;
+  }
+}
+
 /**
  * Handle postback conversion: GET /postback?click_id=xxx&payout=1.50&event=signup&secret=abc
  */
 exports.handlePostback = async (req, res) => {
   try {
-    const clickId = req.query.click_id || req.query.clickid || req.query.cid;
+    // Read params from BOTH the query string and the JSON/form body. Networks
+    // like Impact POST their postbacks with the params in the body — the route
+    // mounts express.json() for exactly that, but this handler used to read
+    // req.query only, so every POST conversion was rejected as "click_id is
+    // required" and silently lost.
+    const p = { ...(req.body || {}), ...req.query };
+
+    const clickId = p.click_id || p.clickid || p.cid;
     if (!clickId) {
       return res.status(400).json({ error: 'click_id is required' });
     }
@@ -30,7 +46,7 @@ exports.handlePostback = async (req, res) => {
     if (offer.advertiser) {
       const advertiser = await Advertiser.findById(offer.advertiser);
       if (advertiser && advertiser.postbackSecret) {
-        const providedSecret = req.query.secret || req.query.token || '';
+        const providedSecret = p.secret || p.token || '';
         if (providedSecret !== advertiser.postbackSecret) {
           return res.status(403).json({ error: 'Invalid postback secret' });
         }
@@ -59,13 +75,19 @@ exports.handlePostback = async (req, res) => {
     }
 
     // --- FIX 2: Multi-event conversion support ---
-    const eventName = req.query.event || req.query.goal || '';
+    const eventName = p.event || p.goal || '';
+
+    // Events already recorded on this click, as a list. conversionEvent is
+    // stored comma-joined; the old code compared the incoming event against the
+    // whole joined string, so after two events ANY replay (`signup` vs
+    // "signup,purchase") looked "different" and was paid out again.
+    const recordedEvents = (click.conversionEvent || '').split(',').map(s => s.trim()).filter(Boolean);
 
     // Check duplicate logic: if already converted, allow only if:
     // 1. allowDuplicateConversions is enabled on the offer, OR
-    // 2. A different event name is provided (multi-event support)
+    // 2. A genuinely new event name is provided (multi-event support)
     if (click.converted) {
-      const isDifferentEvent = eventName && eventName !== (click.conversionEvent || '');
+      const isDifferentEvent = eventName && !recordedEvents.includes(eventName);
       if (!offer.allowDuplicateConversions && !isDifferentEvent) {
         return res.status(409).json({ error: 'Already converted', conversionId: click.conversionId });
       }
@@ -75,53 +97,98 @@ exports.handlePostback = async (req, res) => {
     // Aliases: amount → revenue, txn_id / transaction_id kept for legacy compat
     let revenue = 0;
     let payout = 0;
-    const qRevenue = req.query.revenue || req.query.amount;
-    const qPayout  = req.query.payout;
-    const txnId    = req.query.txn_id || req.query.transaction_id || '';
+    const qRevenue = p.revenue ?? p.amount;
+    const qPayout  = p.payout;
+    const txnId    = p.txn_id || p.transaction_id || '';
 
-    // Check for event-specific values
-    const matchedEvent = offer.events?.find(e => e.eventId === eventName || e.name === eventName);
+    // Reject non-numeric amounts up front. parseFloat('{Amount}') → NaN, which
+    // Mongoose then refuses to save, turning an un-substituted network macro
+    // into a 500 and a silently lost conversion. parseFloat('1,234.56') would
+    // also quietly book $1 — Number() rejects both.
+    const toAmount = (v, field) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) throw new BadAmount(field, v);
+      return n;
+    };
+
+    // Event-specific overrides. An empty eventName must NOT match — the wizard
+    // can save an event row with a blank name, which would otherwise swallow
+    // every base conversion and book its default 0 revenue.
+    const matchedEvent = eventName
+      ? offer.events?.find(e => e.name === eventName)
+      : null;
 
     if (matchedEvent) {
       revenue = matchedEvent.revenueAmount || 0;
       payout = matchedEvent.payoutAmount || 0;
     } else {
-      // Use offer-level values
-      if (qRevenue) {
-        revenue = parseFloat(qRevenue);
-      } else if (['RPA', 'CPA', 'RPS', 'RPC'].includes(offer.revenueType)) {
+      // Use offer-level values. These lists must match the Offer schema enums —
+      // they previously listed types that don't exist (CPL/CPI) while omitting
+      // real ones (RPM, percent_revenue, CPC, CPM), so e.g. a percent_revenue
+      // offer booked $0 payout and 100% margin on every conversion.
+      if (qRevenue !== undefined && qRevenue !== '') {
+        revenue = toAmount(qRevenue, 'revenue');
+      } else if (['RPA', 'RPS', 'RPC', 'RPM'].includes(offer.revenueType)) {
         revenue = offer.revenueAmount || 0;
       }
 
-      if (qPayout) {
-        payout = parseFloat(qPayout);
-      } else if (['CPA', 'CPS', 'CPL', 'CPI'].includes(offer.payoutType)) {
+      if (qPayout !== undefined && qPayout !== '') {
+        payout = toAmount(qPayout, 'payout');
+      } else if (offer.payoutType === 'percent_revenue') {
+        // payoutAmount is a percentage of the conversion's revenue
+        payout = revenue * ((offer.payoutAmount || 0) / 100);
+      } else if (['CPA', 'CPS', 'CPC', 'CPM'].includes(offer.payoutType)) {
         payout = offer.payoutAmount || 0;
       }
     }
 
     const profit = revenue - payout;
-    const conversionId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const newConversionId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-    // Update click — for multi-event, accumulate revenue/payout
-    if (click.converted) {
-      // Multi-event: add to existing values
-      click.revenue = (click.revenue || 0) + revenue;
-      click.payout = (click.payout || 0) + payout;
-      click.profit = (click.profit || 0) + profit;
-      // Track all events as comma-separated
-      const existingEvents = click.conversionEvent || '';
-      click.conversionEvent = existingEvents ? `${existingEvents},${eventName}` : eventName;
+    // Claim the first conversion ATOMICALLY. Networks routinely fire parallel
+    // retries on timeout; the old read-then-save let both requests see
+    // converted:false and each $inc the offer totals, permanently double-counting
+    // revenue against a click that only ever recorded one conversion.
+    const claimed = await Click.findOneAndUpdate(
+      { clickId, converted: { $ne: true } },
+      {
+        $set: {
+          converted: true,
+          conversionId: newConversionId,
+          conversionAt: new Date(),
+          revenue, payout, profit,
+          conversionEvent: eventName,
+        },
+      },
+      { new: true }
+    );
+
+    let conversionId;
+    if (claimed) {
+      conversionId = newConversionId;
     } else {
-      click.converted = true;
-      click.conversionId = conversionId;
-      click.conversionAt = new Date();
-      click.revenue = revenue;
-      click.payout = payout;
-      click.profit = profit;
-      click.conversionEvent = eventName;
+      // Someone already converted this click (an earlier postback, or a
+      // concurrent retry). Re-check the duplicate rule against fresh state.
+      const current = await Click.findOne({ clickId });
+      const events = (current?.conversionEvent || '').split(',').map(s => s.trim()).filter(Boolean);
+      const isDifferentEvent = eventName && !events.includes(eventName);
+      if (!offer.allowDuplicateConversions && !isDifferentEvent) {
+        return res.status(409).json({ error: 'Already converted', conversionId: current?.conversionId });
+      }
+      // Accumulate. $inc is atomic, so concurrent multi-event postbacks can't
+      // lose each other's amounts.
+      const updated = await Click.findOneAndUpdate(
+        { clickId },
+        {
+          $inc: { revenue, payout, profit },
+          $set: { conversionEvent: [...events, eventName].filter(Boolean).join(',') },
+        },
+        { new: true }
+      );
+      // Report the conversionId that is actually stored, not a fresh one that
+      // was never persisted — advertisers reconcile disputes against this.
+      conversionId = updated?.conversionId || current?.conversionId;
     }
-    await click.save();
 
     // Update offer totals
     await Offer.updateOne(
@@ -144,7 +211,7 @@ exports.handlePostback = async (req, res) => {
     });
 
     // Check caps and create notifications
-    await checkCapsAndNotify(offer, revenue);
+    await checkCapsAndNotify(offer);
 
     res.json({
       success: true,
@@ -157,6 +224,12 @@ exports.handlePostback = async (req, res) => {
       profit,
     });
   } catch (err) {
+    if (err instanceof BadAmount) {
+      // Almost always an un-substituted network macro (e.g. revenue={Amount}).
+      // Tell the caller clearly instead of returning an opaque 500.
+      console.warn(`[POSTBACK] ${err.message}`);
+      return res.status(400).json({ error: err.message, field: err.field });
+    }
     console.error('Postback error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -165,62 +238,70 @@ exports.handlePostback = async (req, res) => {
 /**
  * Check caps and create notification alerts
  */
-async function checkCapsAndNotify(offer, revenue) {
+async function checkCapsAndNotify(offer) {
   try {
+    // Caps only apply when the offer has them switched on in the wizard.
+    if (!offer.enableCaps) return;
+
     const refreshed = await Offer.findById(offer._id);
     if (!refreshed) return;
 
     const alerts = [];
+    const today = new Date().toISOString().split('T')[0];
+
+    // NOTE: this function used to read offer.dailyCap / offer.dailyRevenueCap /
+    // offer.capBehavior — none of which exist on the Offer schema. Every one of
+    // those reads was `undefined`, so `undefined > 0` was false and NO cap alert
+    // ever fired. The real fields are dailyConversionCap / monthlyConversionCap /
+    // totalCap, gated by enableCaps.
 
     // Daily conversion cap
-    if (offer.dailyCap > 0) {
-      const today = new Date().toISOString().split('T')[0];
+    if (refreshed.dailyConversionCap > 0) {
       const stat = await DailyStat.findOne({ date: today, offerId: offer._id });
-      if (stat && stat.conversions >= offer.dailyCap) {
+      const conversions = stat?.conversions || 0;
+      if (conversions >= refreshed.dailyConversionCap) {
         alerts.push({
           type: 'cap_alert',
           title: 'Daily Cap Reached',
-          message: `${offer.name} has reached its daily conversion cap of ${offer.dailyCap}`,
+          message: `${offer.name} has reached its daily conversion cap of ${refreshed.dailyConversionCap}`,
           severity: 'warning',
         });
-        if (offer.capBehavior === 'hard') {
-          await Offer.updateOne({ _id: offer._id }, { status: 'paused' });
-        }
-      } else if (stat && stat.conversions >= offer.dailyCap * 0.9) {
+      } else if (conversions >= refreshed.dailyConversionCap * 0.9) {
         alerts.push({
           type: 'cap_alert',
           title: 'Daily Cap Warning',
-          message: `${offer.name} is at ${Math.round(stat.conversions / offer.dailyCap * 100)}% of daily cap`,
+          message: `${offer.name} is at ${Math.round(conversions / refreshed.dailyConversionCap * 100)}% of daily cap`,
           severity: 'info',
         });
       }
     }
 
-    // Daily revenue cap
-    if (offer.dailyRevenueCap > 0) {
-      const today = new Date().toISOString().split('T')[0];
-      const stat = await DailyStat.findOne({ date: today, offerId: offer._id });
-      if (stat && stat.revenue >= offer.dailyRevenueCap) {
+    // Monthly conversion cap
+    if (refreshed.monthlyConversionCap > 0) {
+      const monthStart = today.slice(0, 8) + '01';
+      const agg = await DailyStat.aggregate([
+        { $match: { offerId: offer._id, date: { $gte: monthStart, $lte: today } } },
+        { $group: { _id: null, conversions: { $sum: '$conversions' } } },
+      ]);
+      const monthConversions = agg[0]?.conversions || 0;
+      if (monthConversions >= refreshed.monthlyConversionCap) {
         alerts.push({
           type: 'cap_alert',
-          title: 'Daily Revenue Cap Reached',
-          message: `${offer.name} has reached its daily revenue cap of $${offer.dailyRevenueCap}`,
+          title: 'Monthly Cap Reached',
+          message: `${offer.name} has reached its monthly conversion cap of ${refreshed.monthlyConversionCap}`,
           severity: 'warning',
         });
       }
     }
 
     // Total cap
-    if (offer.totalCap > 0 && refreshed.totalConversions >= offer.totalCap) {
+    if (refreshed.totalCap > 0 && refreshed.totalConversions >= refreshed.totalCap) {
       alerts.push({
         type: 'cap_alert',
         title: 'Total Cap Reached',
-        message: `${offer.name} has reached its total conversion cap of ${offer.totalCap}`,
+        message: `${offer.name} has reached its total conversion cap of ${refreshed.totalCap}`,
         severity: 'error',
       });
-      if (offer.capBehavior === 'hard') {
-        await Offer.updateOne({ _id: offer._id }, { status: 'paused' });
-      }
     }
 
     // Save notifications and send to Telegram
