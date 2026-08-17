@@ -34,8 +34,8 @@ const defaultForm = {
  conversionTrackingMethod: 'server_postback', supportDeepLinks: false,
  enableCaps: false, dailyClickCap: 0, dailyConversionCap: 0, monthlyConversionCap: 0, totalCap: 0,
  offerVisibility: 'public', enableTerms: false, termsContent: '',
- uniqueSessionIdentifier: 'ip', sessionDuration: 24, sessionDurationUnit: 'hours',
- enableDuplicateFilter: true, redirectMode: '302',
+ ipCap: 0, ipCapWindow: '24h', ipCapWindowHours: 24,
+ uniqueIdentifier: 'ip_ua', fallbackUrl: '', redirectMode: '302',
  // Step 3
  baseEventName: 'Base', firePartnerPostback: false, manualApproveConversions: false,
  allowDuplicateConversions: false,
@@ -259,14 +259,24 @@ function StepTracking({ form, setField, trackingDomains, errors = {} }) {
  <textarea value={form.termsContent ?? ''} onChange={e => setField('termsContent', e.target.value)} rows={3}
  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none resize-y focus:ring-2 focus:ring-blue-500" placeholder="Terms & conditions..." />
  )}
- <Select label="Unique Session Identifier" required value={form.uniqueSessionIdentifier} onChange={v => setField('uniqueSessionIdentifier', v)}
- options={[{ value: 'ip', label: 'IP Address' }, { value: 'ip_ua', label: 'IP + User Agent' }, { value: 'cookie', label: 'Cookie' }, { value: 'device_id', label: 'Device ID' }]} />
- <div className="grid grid-cols-2 gap-4">
- <Input label="Session Duration" type="number" value={form.sessionDuration} onChange={v => setField('sessionDuration', v)} />
- <Select label="Duration Unit" value={form.sessionDurationUnit} onChange={v => setField('sessionDurationUnit', v)}
- options={[{ value: 'hours', label: 'Hours' }, { value: 'days', label: 'Days' }]} />
+ <SectionHeader>Frequency Cap</SectionHeader>
+ <Input label="Frequency Cap (clicks per IP)" type="number" value={form.ipCap} onChange={v => setField('ipCap', v)} />
+ <p className="text-xs text-gray-400 -mt-2">0 = unlimited. Set a number to mark clicks beyond that cap as duplicate.</p>
+ {Number(form.ipCap) > 0 && (
+ <div className="space-y-4 pl-4 border-l-2 border-blue-200">
+ <Select label="Window" value={form.ipCapWindow} onChange={v => setField('ipCapWindow', v)}
+ options={[{ value: '24h', label: '24 hours' }, { value: '48h', label: '48 hours' }, { value: '7d', label: '7 days' }, { value: '30d', label: '30 days' }, { value: 'custom', label: 'Custom' }, { value: 'forever', label: 'Forever' }]} />
+ {form.ipCapWindow === 'custom' && (
+ <Input label="Custom Window (hours)" type="number" value={form.ipCapWindowHours} onChange={v => setField('ipCapWindowHours', v)} />
+ )}
+ <Select label="Unique by" value={form.uniqueIdentifier} onChange={v => setField('uniqueIdentifier', v)}
+ options={[{ value: 'ip', label: 'IP only' }, { value: 'ip_ua', label: 'IP + User Agent (recommended)' }, { value: 'ip_ua_ref', label: 'IP + User Agent + Referer' }]} />
+ <p className="text-xs text-gray-400 -mt-2">IP + UA recommended — pure IP blocks different users behind the same carrier IP (Jio/Airtel CGNAT).</p>
+ <Input label="Fallback URL (optional)" value={form.fallbackUrl} onChange={v => setField('fallbackUrl', v)} placeholder="https://example.com/sorry" />
+ <p className="text-xs text-gray-400 -mt-2">Leave empty to redirect to the original landing page. Set a URL to send duplicate clicks there instead.</p>
  </div>
- <Toggle label="Enable Duplicate Click Filter" checked={form.enableDuplicateFilter} onChange={() => setField('enableDuplicateFilter', !form.enableDuplicateFilter)} />
+ )}
+
  <Select label="Redirect Mode" required value={form.redirectMode} onChange={v => setField('redirectMode', v)}
  options={[{ value: '302', label: '302 Redirect' }, { value: '301', label: '301 Redirect' }, { value: 'meta_refresh', label: 'Meta Refresh' }, { value: 'javascript', label: 'JavaScript Redirect' }]} />
  </Collapsible>

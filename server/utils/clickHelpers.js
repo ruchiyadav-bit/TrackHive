@@ -1,8 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const geoip = require('geoip-lite');
 const UAParser = require('ua-parser-js');
-const crypto = require('crypto');
-const { getRedis } = require('../config/redis');
 
 /**
  * Generate a unique click ID
@@ -36,50 +34,48 @@ exports.parseVisitorInfo = (req) => {
 };
 
 /**
- * Generate a unique hash for dedup based on offer settings
+ * Convert ipCapWindow to hours
  */
-exports.generateUniqueHash = (offer, visitor) => {
-  const parts = [visitor.ip];
-  if (offer.uniqueIdentifier === 'ip_ua' || offer.uniqueIdentifier === 'ip_ua_ref') {
-    parts.push(visitor.userAgent);
+function windowHours(window, customHours) {
+  switch (window) {
+    case '24h':   return 24;
+    case '48h':   return 48;
+    case '7d':    return 168;
+    case '30d':   return 720;
+    case 'custom': return customHours || 24;
+    case 'forever':
+    default:      return 8760; // 1 year
   }
-  if (offer.uniqueIdentifier === 'ip_ua_ref') {
-    parts.push(visitor.referer);
-  }
-  return crypto.createHash('sha256').update(parts.join('|')).digest('hex').substring(0, 32);
-};
+}
 
 /**
- * Check if click is a duplicate using Redis
+ * Check if click is a duplicate using MongoDB
+ * Returns true if the visitor has already hit the cap
  */
-exports.checkDuplicate = async (offer, uniqueHash) => {
-  const redis = getRedis();
-  if (!redis) return false;
+exports.checkDuplicate = async (Click, offer, visitor) => {
+  const cap = Number(offer.ipCap) || 0;
+  if (cap <= 0) return false;
 
-  const key = `ip_cap:${offer._id}:${uniqueHash}`;
-  const count = await redis.get(key);
-  const cap = offer.ipCap || 1;
+  const hours = windowHours(offer.ipCapWindow, offer.ipCapWindowHours);
+  const since = new Date(Date.now() - hours * 3600 * 1000);
 
-  if (count && parseInt(count) >= cap) return true;
+  const filter = {
+    offerId: offer._id,
+    ip: visitor.ip,
+    clickedAt: { $gte: since },
+    isDuplicate: { $ne: true },
+  };
 
-  // Determine TTL based on cap window
-  let ttl;
-  switch (offer.ipCapWindow) {
-    case '24h': ttl = 86400; break;
-    case '48h': ttl = 172800; break;
-    case '7d': ttl = 604800; break;
-    case '30d': ttl = 2592000; break;
-    case 'custom': ttl = (offer.ipCapWindowHours || 24) * 3600; break;
-    case 'forever':
-    default: ttl = 31536000; break; // 1 year
+  if (offer.uniqueIdentifier === 'ip_ua' ||
+      offer.uniqueIdentifier === 'ip_ua_ref') {
+    filter.userAgent = visitor.userAgent;
+  }
+  if (offer.uniqueIdentifier === 'ip_ua_ref') {
+    filter.referer = visitor.referer || '';
   }
 
-  await redis.multi()
-    .incr(key)
-    .expire(key, ttl)
-    .exec();
-
-  return false;
+  const count = await Click.countDocuments(filter);
+  return count >= cap;
 };
 
 /**

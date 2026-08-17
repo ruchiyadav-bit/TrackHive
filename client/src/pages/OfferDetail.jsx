@@ -269,14 +269,22 @@ export default function OfferDetail() {
  } />
  <InfoRow label="Linking Type" value={offer.linkingType === 'direct' ? 'Direct' : 'Redirect'} />
  <InfoRow label="Redirect Mode" value={offer.redirectMode || '302'} />
- <InfoRow label="Duplicate Filter" value={offer.enableDuplicateFilter !== false ? 'Enabled' : 'Disabled'} />
- <InfoRow label="Session ID" value={
- offer.uniqueSessionIdentifier === 'ip' ? 'IP Address' :
- offer.uniqueSessionIdentifier === 'ip_ua' ? 'IP + User Agent' :
- offer.uniqueSessionIdentifier === 'cookie' ? 'Cookie' :
- offer.uniqueSessionIdentifier === 'device_id' ? 'Device ID' :
- offer.uniqueSessionIdentifier || 'IP Address'
+ <InfoRow label="Frequency Cap" value={
+ Number(offer.ipCap) > 0
+   ? `${offer.ipCap} clicks / ${
+       offer.ipCapWindow === 'custom'
+         ? `${offer.ipCapWindowHours}h`
+         : offer.ipCapWindow || '24h'
+     } (${
+       offer.uniqueIdentifier === 'ip' ? 'IP' :
+       offer.uniqueIdentifier === 'ip_ua_ref' ? 'IP + UA + Ref' :
+       'IP + UA'
+     })`
+   : 'Unlimited'
  } />
+ {Number(offer.ipCap) > 0 && offer.fallbackUrl && (
+   <InfoRow label="Fallback URL" value={offer.fallbackUrl} />
+ )}
  </div>
  </div>
  </Section>

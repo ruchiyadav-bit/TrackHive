@@ -50,14 +50,20 @@ const offerSchema = new mongoose.Schema(
     offerVisibility: { type: String, enum: ['public', 'requires_approval', 'private'], default: 'public' },
     enableTerms: { type: Boolean, default: false },
     termsContent: String,
-    uniqueSessionIdentifier: {
+    // Frequency cap (per-IP click cap)
+    ipCap: { type: Number, default: 0, min: 0 },         // 0 = unlimited
+    ipCapWindow: {
       type: String,
-      enum: ['ip', 'ip_ua', 'cookie', 'device_id'],
-      default: 'ip',
+      enum: ['24h', '48h', '7d', '30d', 'custom', 'forever'],
+      default: '24h',
     },
-    sessionDuration: { type: Number, default: 24 },
-    sessionDurationUnit: { type: String, enum: ['hours', 'days'], default: 'hours' },
-    enableDuplicateFilter: { type: Boolean, default: true },
+    ipCapWindowHours: { type: Number, default: 24 },       // used when ipCapWindow = 'custom'
+    uniqueIdentifier: {
+      type: String,
+      enum: ['ip', 'ip_ua', 'ip_ua_ref'],
+      default: 'ip_ua',
+    },
+    fallbackUrl: String,                                   // redirect here on duplicate (if set)
     redirectMode: {
       type: String,
       enum: ['302', '301', 'meta_refresh', 'javascript'],

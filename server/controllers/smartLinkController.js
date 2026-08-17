@@ -2,7 +2,7 @@ const Offer = require('../models/Offer');
 const Click = require('../models/Click');
 const DailyStat = require('../models/DailyStat');
 const {
-  generateClickId, parseVisitorInfo, generateUniqueHash,
+  generateClickId, parseVisitorInfo,
   checkDuplicate, detectBot, detectVpn, isIpBlocked,
   checkGeoTarget, replaceMacros, updateDailyStats,
 } = require('../utils/clickHelpers');
@@ -39,7 +39,6 @@ exports.handleSmartLink = async (req, res) => {
 
     const visitor = parseVisitorInfo(req);
     const clickId = generateClickId();
-    const uniqueHash = generateUniqueHash(offer, visitor);
 
     // Bot detection
     const isBot = offer.botDetection && detectBot(visitor.userAgent);
@@ -61,8 +60,9 @@ exports.handleSmartLink = async (req, res) => {
       return sendBlockedPage(res, offer, 'GEO restricted');
     }
 
-    // Duplicate/IP cap check
-    const isDuplicate = await checkDuplicate(offer, uniqueHash);
+    // Duplicate/IP cap check (MongoDB-based)
+    const cap = Number(offer.ipCap) || 0;
+    const isDuplicate = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
 
     if (isDuplicate) {
       // Handle duplicate based on offer config
@@ -98,7 +98,7 @@ exports.handleSmartLink = async (req, res) => {
     // Log click
     await logClick(offer, clickId, visitor, req, {
       isDuplicate, isVpn, isSmartLink: true, smartLinkSlug: slug,
-      uniqueHash, redirectUrl, startTime,
+      redirectUrl, startTime,
     });
 
     // Redirect — use redirectMode from model ('302', '301', 'meta_refresh', 'javascript')

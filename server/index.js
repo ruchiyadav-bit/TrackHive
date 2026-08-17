@@ -8,7 +8,6 @@ const mongoSanitize = require('express-mongo-sanitize');
 const path = require('path');
 
 const connectDB = require('./config/db');
-const { connectRedis } = require('./config/redis');
 const errorHandler = require('./middleware/errorHandler');
 
 // Validate required env vars
@@ -129,7 +128,6 @@ app.use(errorHandler);
 // Start server
 const startServer = async () => {
   await connectDB();
-  connectRedis();
 
   // Seed admin user on first run
   const { seedAdmin } = require('./utils/seedAdmin');

@@ -2,7 +2,7 @@ const Offer = require('../models/Offer');
 const Click = require('../models/Click');
 const DailyStat = require('../models/DailyStat');
 const {
-  generateClickId, parseVisitorInfo, replaceMacros, updateDailyStats,
+  generateClickId, parseVisitorInfo, checkDuplicate, replaceMacros, updateDailyStats,
 } = require('../utils/clickHelpers');
 
 /**
@@ -48,11 +48,20 @@ exports.handleClick = async (req, res) => {
       return res.status(500).json({ error: 'Invalid redirect URL' });
     }
 
+    // ── Frequency cap check (only when ipCap > 0) ──
+    const cap = Number(offer.ipCap) || 0;
+    const isDup = cap > 0
+      ? await checkDuplicate(Click, offer, visitor)
+      : false;
+
+    // Duplicate? Still redirect (never show block page), use fallback URL if set
+    const finalUrl = (isDup && offer.fallbackUrl) ? offer.fallbackUrl : redirectUrl;
+
     // ── REDIRECT FIRST — DB writes happen after the response is sent ──
     // redirectMode values from model: '301', '302', 'meta_refresh', 'javascript'
     const statusCode = offer.redirectMode === '301' ? 301 : 302;
-    console.log(`[CLICK] ${clickId} → ${redirectUrl}`);
-    res.redirect(statusCode, redirectUrl);
+    console.log(`[CLICK] ${clickId}${isDup ? ' (dup)' : ''} → ${finalUrl}`);
+    res.redirect(statusCode, finalUrl);
 
     // Fire-and-forget: log click + update stats in the background
     setImmediate(async () => {
@@ -68,7 +77,8 @@ exports.handleClick = async (req, res) => {
           subId4: req.query.sub4 || '',
           subId5: req.query.sub5 || '',
           source: req.query.source || '',
-          redirectUrl,
+          isDuplicate: isDup,
+          redirectUrl: finalUrl,
           redirectType: offer.redirectMode || '302',
           responseTimeMs: Date.now() - startTime,
           clickedAt: new Date(),
@@ -78,6 +88,7 @@ exports.handleClick = async (req, res) => {
         await Promise.all([
           updateDailyStats(DailyStat, offer._id, offer.name, {
             click: true,
+            isDuplicate: isDup,
             country: visitor.country,
             device: visitor.device,
             browser: visitor.browser,
