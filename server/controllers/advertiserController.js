@@ -1,4 +1,5 @@
 const Advertiser = require('../models/Advertiser');
+const Offer = require('../models/Offer');
 const crypto = require('crypto');
 
 exports.list = async (req, res, next) => {
@@ -23,7 +24,32 @@ exports.get = async (req, res, next) => {
   try {
     const advertiser = await Advertiser.findById(req.params.id);
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });
-    res.json({ advertiser });
+
+    // Fetch offers linked to this advertiser
+    const offers = await Offer.find({ advertiser: advertiser._id })
+      .select('name status category totalClicks totalConversions totalRevenue totalPayout totalProfit currency')
+      .sort('-createdAt')
+      .lean();
+
+    // Aggregated stats
+    const stats = {
+      totalOffers: offers.length,
+      activeOffers: offers.filter(o => o.status === 'active').length,
+      totalClicks: 0,
+      totalConversions: 0,
+      totalRevenue: 0,
+      totalPayout: 0,
+      totalProfit: 0,
+    };
+    for (const o of offers) {
+      stats.totalClicks += o.totalClicks || 0;
+      stats.totalConversions += o.totalConversions || 0;
+      stats.totalRevenue += o.totalRevenue || 0;
+      stats.totalPayout += o.totalPayout || 0;
+      stats.totalProfit += o.totalProfit || 0;
+    }
+
+    res.json({ advertiser, offers, stats });
   } catch (error) {
     next(error);
   }
@@ -66,6 +92,14 @@ exports.update = async (req, res, next) => {
 
 exports.remove = async (req, res, next) => {
   try {
+    // Block delete if offers are linked
+    const linkedOffers = await Offer.countDocuments({ advertiser: req.params.id });
+    if (linkedOffers > 0) {
+      return res.status(400).json({
+        error: `Cannot delete — ${linkedOffers} offer${linkedOffers > 1 ? 's are' : ' is'} linked to this advertiser`,
+      });
+    }
+
     const advertiser = await Advertiser.findByIdAndDelete(req.params.id);
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });
     res.json({ message: 'Advertiser deleted' });

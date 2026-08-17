@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, Edit2, Trash2, Copy, ExternalLink, Search, AlertTriangle, Check, Info } from 'lucide-react';
 import api from '../api/client';
 
@@ -131,7 +132,8 @@ export default function Advertisers() {
    await api.delete(`/advertisers/${id}`);
    fetchAdvertisers();
   } catch (err) {
-   console.error(err);
+   const msg = err.response?.data?.error || 'Failed to delete';
+   alert(msg);
   }
  };
 
@@ -199,9 +201,9 @@ export default function Advertisers() {
         return (
         <tr key={adv._id} className="hover:bg-gray-50">
          <td className="px-4 py-3">
-          <div className="font-medium text-gray-900 text-sm">{adv.name}</div>
+          <Link to={`/advertisers/${adv._id}`} className="font-medium text-blue-600 text-sm hover:underline">{adv.name}</Link>
           {adv.website && (
-           <a href={adv.website} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 flex items-center gap-1 hover:underline">
+           <a href={adv.website} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 flex items-center gap-1 hover:underline hover:text-blue-600">
             <ExternalLink size={10} /> {adv.website.replace(/^https?:\/\//, '')}
            </a>
           )}

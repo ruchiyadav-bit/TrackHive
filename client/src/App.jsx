@@ -13,6 +13,7 @@ import Settings from './pages/Settings';
 import ClickReport from './pages/ClickReport';
 import UserManagement from './pages/UserManagement';
 import Advertisers from './pages/Advertisers';
+import AdvertiserDetail from './pages/AdvertiserDetail';
 import TrackingDomains from './pages/TrackingDomains';
 
 function ProtectedRoute({ children }) {
@@ -72,6 +73,7 @@ export default function App() {
         <Route path="/offers/:id/edit" element={<OfferEdit />} />
         <Route path="/advertisers" element={<Advertisers />} />
         <Route path="/advertisers/new" element={<Advertisers />} />
+        <Route path="/advertisers/:id" element={<AdvertiserDetail />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/reports/*" element={<Reports />} />
         <Route path="/reports/clicks" element={<ClickReport />} />
