@@ -133,9 +133,12 @@ exports.isIpBlocked = (ip, blocklist) => {
  * Check GEO targeting
  */
 exports.checkGeoTarget = (offer, country) => {
-  if (!offer.geoTargets || offer.geoTargets.length === 0) return true;
-  const isInList = offer.geoTargets.includes(country);
-  return offer.geoMode === 'blacklist' ? !isInList : isInList;
+  // Field names match the Offer model (Step 5: Targeting) — geoCountries + geoMode
+  // ('include' | 'exclude'). Previously read the non-existent offer.geoTargets /
+  // geoMode === 'blacklist', so geo targeting silently never applied.
+  if (!offer.geoCountries || offer.geoCountries.length === 0) return true;
+  const isInList = offer.geoCountries.includes(country);
+  return offer.geoMode === 'exclude' ? !isInList : isInList;
 };
 
 /**
@@ -171,7 +174,10 @@ exports.updateDailyStats = async (DailyStat, offerId, offerName, data) => {
 
   if (data.click) {
     update.$inc.clicks = 1;
-    if (!data.isDuplicate) update.$inc.uniqueClicks = 1;
+    // Targeting blocks (bot/geo/device/ip) are not duplicates but must still
+    // be excluded from Unique — a blocked visitor was never actually
+    // delivered to the offer.
+    if (!data.isDuplicate && !data.isBlocked) update.$inc.uniqueClicks = 1;
     // Frequency-cap blocks are still duplicates and count in Dup. Clicks —
     // they must NOT also count in Invalid Clicks (reserved for bot/geo/
     // device/IP blocks), otherwise the same click would be counted twice.

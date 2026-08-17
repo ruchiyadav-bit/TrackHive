@@ -396,7 +396,7 @@ MongoDB-based per-IP click cap — no Redis required.
 - `fallback` — the click redirects to `offer.fallbackUrl`. If `onDuplicate` is `fallback` but `fallbackUrl` is empty, the system falls back to `block` and logs a console warning (`resolveDuplicateAction`).
 - `redirect` — legacy behaviour: the click redirects to the normal offer URL, only marked `isDuplicate: true`.
 
-**Dup vs. Invalid accounting:** A frequency-cap block is both `isDuplicate: true` and `isBlocked: true` on the Click document, but it counts **only** in **Dup. Clicks** in reporting — never in **Invalid Clicks**. Invalid Clicks stays reserved for bot/geo/device/IP blocks (the ones that set `isBlocked: true` for a reason other than `frequency_cap`). This is enforced in `server/utils/clickHelpers.js#updateDailyStats` (skips `blockedClicks` increment when `blockReason === 'frequency_cap'`) and in the raw-Click report aggregations in `reportController.js` (`INVALID_CLICKS_EXPR` excludes `blockReason: 'frequency_cap'`), so a block is never counted in both buckets at once.
+**Dup vs. Invalid accounting:** A frequency-cap block is both `isDuplicate: true` and `isBlocked: true` on the Click document, but it counts **only** in **Dup. Clicks** in reporting — never in **Invalid Clicks**. Invalid Clicks stays reserved for bot/geo/device/IP blocks (the ones that set `isBlocked: true` for a reason other than `frequency_cap`). This is enforced in `server/utils/clickHelpers.js#updateDailyStats` (skips `blockedClicks` increment when `blockReason === 'frequency_cap'`) and in the raw-Click report aggregations in `reportController.js` (`INVALID_CLICKS_EXPR` excludes `blockReason: 'frequency_cap'`), so a block is never counted in both buckets at once. **Unique Clicks** excludes both — any duplicate (frequency-cap) AND any blocked click (bot/geo/device/ip/frequency-cap) are excluded from `uniqueClicks`, since a blocked visitor was never actually delivered to the offer (`UNIQUE_CLICKS_EXPR` in `reportController.js`, and the `!data.isDuplicate && !data.isBlocked` check in `updateDailyStats`).
 
 **Migration:** Offers created before this feature don't have `onDuplicate` stored in Mongo. Run `npm run migrate:on-duplicate` (from `server/`) once after deploying — it sets `onDuplicate: 'redirect'` on every offer missing the field, preserving the pre-existing "always redirect" behaviour so live traffic isn't suddenly blocked. Only offers created after the migration default to `block`.
 
@@ -1208,8 +1208,16 @@ The Click model stores conversion data directly on the click document (single `c
 ### 2. Render free tier cold starts
 Render's free tier spins down the service after inactivity. The first request after sleep takes 30-50 seconds. Affiliate networks typically timeout postbacks in 5-10 seconds, so conversions will be silently dropped during cold starts. **Before going to production:** upgrade to a paid Render instance, or set up a keep-alive cron that pings `/api/health` every 10 minutes.
 
-### 3. Bot/VPN/geo/IP-blocklist only active on smart links
-`detectBot()`, `detectVpn()`, `checkGeoTarget()`, and `isIpBlocked()` are defined in `clickHelpers.js` and exported, but the `/click` route (`clickController.handleClick`) does **not** call any of them. Only the `/go/:slug` smart link route (`smartLinkController.handleSmartLink`) uses these functions. This means direct click tracking links have no bot filtering, no VPN detection, no geo targeting, and no IP blocklist enforcement. The Click model has fields for `isBot`, `isVpn`, `isBlocked`, `blockReason` but they are never populated on `/click` traffic.
+### 3. Bot/VPN/geo/IP-blocklist/device targeting — FIXED, now shared between /click and /go/:slug
+Previously only `/go/:slug` applied Step 5 targeting; `/click` ignored all of it. Both entry points now run the same synchronous filter chain via `server/utils/trafficFilter.js#applyFilters(offer, visitor, req)`:
+1. Bot detection (`detectBot`) → `blockReason: 'bot'`
+2. IP blocklist (`isIpBlocked`) → `blockReason: 'ip_blocked'`
+3. Geo targeting (`checkGeoTarget`) → `blockReason: 'geo'`
+4. Device/OS/Browser targeting (`checkDeviceTarget`, new — case-insensitive, empty array = no restriction on that dimension) → `blockReason: 'device'`
+5. VPN (`detectVpn`) — flagged only (`isVpn`), never blocks. Behind Render's proxy/CDN, `x-forwarded-for` routinely has multiple IPs, so treating VPN as a hard block would false-positive on legitimate traffic.
+6. Frequency cap — last, the only check that hits the DB (see Section 8).
+
+A targeting block redirects to `offer.fallbackUrl` if set, otherwise shows the shared "Access Restricted" page (`403`). Either way it's logged `isBlocked: true` with the specific `blockReason`, and counts in **Invalid Clicks** (never in Unique Clicks) — see Section 8's Dup vs. Invalid accounting for how this differs from a frequency-cap block.
 
 ### 4. Click-to-conversion window — validated on postback
 The `enableClickToConversionTime`, `clickToConversionValue`, and `clickToConversionUnit` fields on the Offer model are checked in `postbackController.handlePostback`. If the elapsed time between the click and the postback exceeds the configured window, the postback returns `410 {"error":"Conversion window expired"}`. This works correctly.
@@ -1217,8 +1225,8 @@ The `enableClickToConversionTime`, `clickToConversionValue`, and `clickToConvers
 ### 5. VPN detection false positives behind proxies
 `detectVpn()` flags a request as VPN if `x-forwarded-for` contains a comma (multiple IPs) or if headers like `via`, `x-proxy-id`, `proxy-connection` are present. Behind a CDN or reverse proxy (which Render uses), these headers are routinely present. This means legitimate traffic through CDNs or corporate proxies may be falsely flagged as VPN on smart links.
 
-### 6. checkGeoTarget field name mismatch
-`checkGeoTarget()` in `clickHelpers.js` reads `offer.geoTargets` and checks for `geoMode === 'blacklist'`, but the Offer model uses `geoCountries` (not `geoTargets`) and `geoMode` enum values `'include'` / `'exclude'` (not `'blacklist'`). This means geo targeting on smart links may not work correctly until these field names are aligned.
+### 6. checkGeoTarget field name mismatch — FIXED
+`checkGeoTarget()` in `clickHelpers.js` used to read `offer.geoTargets` and check `geoMode === 'blacklist'`, neither of which exist on the Offer model (`geoCountries` / `'include'`|`'exclude'`), so geo targeting silently never applied on either `/click` or `/go/:slug`. Now reads the correct fields.
 
 ### 7. SubID/Country/Device standalone reports removed
 The old SubID, Country, and Device standalone reports have been removed. Country and device breakdowns are now available as expand rows inside the Offer Report (per-offer byCountry + byDevice sub-tables from DailyStat Maps). The `bySubId`, `byCountry`, `byDevice`, `byBrowser`, `byOs`, `bySource` Maps in DailyStat are still populated by `updateDailyStats()` and available for future use.

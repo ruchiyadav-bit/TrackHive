@@ -5,6 +5,7 @@ const {
   generateClickId, parseVisitorInfo, checkDuplicate, replaceMacros, updateDailyStats,
   resolveDuplicateAction,
 } = require('../utils/clickHelpers');
+const { applyFilters } = require('../utils/trafficFilter');
 const { sendBlockedPage } = require('../utils/blockedPage');
 
 /**
@@ -56,38 +57,57 @@ exports.handleClick = async (req, res) => {
       return res.status(500).json({ error: 'Invalid redirect URL' });
     }
 
-    // ── Frequency cap check (only when ipCap > 0) ──
-    const cap = Number(offer.ipCap) || 0;
-    const isDup = cap > 0
-      ? await checkDuplicate(Click, offer, visitor)
-      : false;
+    // ── 1-4: sync targeting filters — bot → IP blocklist → geo → device/OS/browser.
+    // Cheap checks first, no DB query. Shared with /go/:slug via trafficFilter.js
+    // so both entry points enforce the same Step 5 targeting rules.
+    const filter = applyFilters(offer, visitor, req);
 
-    // ── On-duplicate behaviour: block | fallback | redirect ──
     let finalUrl = redirectUrl;
-    let isBlocked = false;
-    let blockReason = '';
+    let isBlocked = filter.isBlocked;
+    let blockReason = filter.blockReason;
+    let isDup = false;
 
-    if (isDup) {
-      const action = resolveDuplicateAction(offer);
-      if (action === 'block') {
-        isBlocked = true;
-        blockReason = 'frequency_cap';
-      } else if (action === 'fallback') {
-        finalUrl = offer.fallbackUrl;
+    if (isBlocked) {
+      // Targeting block: redirect to fallbackUrl if the offer has one,
+      // otherwise show the blocked page. Still logged as isBlocked: true
+      // either way, so it counts as an Invalid Click.
+      if (offer.fallbackUrl) finalUrl = offer.fallbackUrl;
+    } else {
+      // ── 6: Frequency cap — last, the only check that hits the DB ──
+      const cap = Number(offer.ipCap) || 0;
+      isDup = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
+
+      if (isDup) {
+        const action = resolveDuplicateAction(offer);
+        if (action === 'block') {
+          isBlocked = true;
+          blockReason = 'frequency_cap';
+        } else if (action === 'fallback') {
+          finalUrl = offer.fallbackUrl;
+        }
+        // action === 'redirect' → finalUrl stays as the normal offer URL
       }
-      // action === 'redirect' → finalUrl stays as the normal offer URL
     }
 
+    // Debug log — confirms exactly what onDuplicate/fallback value was read
+    // for this offer and what decision was made from it.
+    console.log(
+      `[CLICK] ${clickId} dup=${isDup} onDuplicate=${offer.onDuplicate || 'block'} ` +
+      `fallbackUrl=${offer.fallbackUrl || '(none)'} blocked=${isBlocked} reason=${blockReason || '-'} → ` +
+      `${isBlocked && !offer.fallbackUrl ? '(blocked page)' : finalUrl}`
+    );
+
     // ── Send the response FIRST — DB writes happen after ──
-    if (isBlocked) {
-      // Block: no redirect at all, but the click is still logged below so
-      // the number of blocks is visible in reporting.
-      console.log(`[CLICK] ${clickId} (dup, blocked) offer=${offer._id}`);
+    if (isBlocked && blockReason === 'frequency_cap') {
+      // onDuplicate='block' never redirects, even if a fallbackUrl is set
+      // (that case is handled by onDuplicate='fallback' instead).
       sendBlockedPage(res, { statusCode: 429 });
+    } else if (isBlocked && !offer.fallbackUrl) {
+      // Targeting block (bot/geo/device/ip) with no fallback configured.
+      sendBlockedPage(res, { statusCode: 403 });
     } else {
       // redirectMode values from model: '301', '302', 'meta_refresh', 'javascript'
       const statusCode = offer.redirectMode === '301' ? 301 : 302;
-      console.log(`[CLICK] ${clickId}${isDup ? ' (dup)' : ''} → ${finalUrl}`);
       res.redirect(statusCode, finalUrl);
     }
 
@@ -100,10 +120,12 @@ exports.handleClick = async (req, res) => {
           offerName: offer.name,
           ...visitor,
           ...subIds,
+          isBot: filter.isBot,
+          isVpn: filter.isVpn,
           isDuplicate: isDup,
           isBlocked,
           blockReason,
-          redirectUrl: isBlocked ? '' : finalUrl,
+          redirectUrl: (isBlocked && blockReason === 'frequency_cap') ? '' : finalUrl,
           redirectType: offer.redirectMode || '302',
           responseTimeMs: Date.now() - startTime,
           clickedAt: new Date(),
@@ -115,6 +137,7 @@ exports.handleClick = async (req, res) => {
             click: true,
             isDuplicate: isDup,
             isBlocked,
+            isBot: filter.isBot,
             blockReason,
             country: visitor.country,
             device: visitor.device,

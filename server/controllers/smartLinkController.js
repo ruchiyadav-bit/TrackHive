@@ -3,10 +3,10 @@ const Click = require('../models/Click');
 const DailyStat = require('../models/DailyStat');
 const {
   generateClickId, parseVisitorInfo,
-  checkDuplicate, detectBot, detectVpn, isIpBlocked,
-  checkGeoTarget, replaceMacros, updateDailyStats,
+  checkDuplicate, replaceMacros, updateDailyStats,
   resolveDuplicateAction,
 } = require('../utils/clickHelpers');
+const { applyFilters } = require('../utils/trafficFilter');
 const { sendBlockedPage: sendBlockedResponse, DEFAULT_BLOCKED_MESSAGE } = require('../utils/blockedPage');
 
 exports.handleSmartLink = async (req, res) => {
@@ -42,26 +42,6 @@ exports.handleSmartLink = async (req, res) => {
     const visitor = parseVisitorInfo(req);
     const clickId = generateClickId();
 
-    // Bot detection
-    const isBot = offer.botDetection && detectBot(visitor.userAgent);
-    if (isBot) {
-      return sendBlockedPage(res, offer, 'Bot detected');
-    }
-
-    // VPN detection
-    const isVpn = offer.vpnDetection && detectVpn(req);
-
-    // IP blocklist
-    if (isIpBlocked(visitor.ip, offer.ipBlocklist)) {
-      return sendBlockedPage(res, offer, 'IP blocked');
-    }
-
-    // GEO targeting
-    if (!checkGeoTarget(offer, visitor.country)) {
-      if (offer.redirectOnFail) return res.redirect(302, offer.redirectOnFail);
-      return sendBlockedPage(res, offer, 'GEO restricted');
-    }
-
     // Build redirect URL with macros (needed even for the 'block' path so the
     // Click record can still show what the visitor would have hit)
     const subIds = {
@@ -82,41 +62,65 @@ exports.handleSmartLink = async (req, res) => {
       return res.status(500).send('Invalid redirect URL');
     }
 
-    // Duplicate/IP cap check (MongoDB-based)
-    const cap = Number(offer.ipCap) || 0;
-    const isDuplicate = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
+    // ── 1-4: sync targeting filters — bot → IP blocklist → geo → device/OS/browser.
+    // Shared with /click via trafficFilter.js so both entry points enforce the
+    // same Step 5 targeting rules.
+    const filter = applyFilters(offer, visitor, req);
 
-    // ── On-duplicate behaviour: block | fallback | redirect ──
     let finalUrl = redirectUrl;
-    let isBlocked = false;
-    let blockReason = '';
-
-    if (isDuplicate) {
-      const action = resolveDuplicateAction(offer);
-      if (action === 'block') {
-        isBlocked = true;
-        blockReason = 'frequency_cap';
-      } else if (action === 'fallback') {
-        finalUrl = offer.fallbackUrl;
-      }
-      // action === 'redirect' → finalUrl stays as the normal offer URL
-    }
+    let isBlocked = filter.isBlocked;
+    let blockReason = filter.blockReason;
+    let isDuplicate = false;
 
     if (isBlocked) {
-      // Block: no redirect, but still log the click so blocks are visible in reporting.
+      // Targeting block: redirect to fallbackUrl if set, otherwise blocked page.
+      // Still logged as isBlocked: true either way (counts as Invalid Click).
+      if (offer.fallbackUrl) finalUrl = offer.fallbackUrl;
+    } else {
+      // ── 6: Frequency cap — last, the only check that hits the DB ──
+      const cap = Number(offer.ipCap) || 0;
+      isDuplicate = cap > 0 ? await checkDuplicate(Click, offer, visitor) : false;
+
+      if (isDuplicate) {
+        const action = resolveDuplicateAction(offer);
+        if (action === 'block') {
+          isBlocked = true;
+          blockReason = 'frequency_cap';
+        } else if (action === 'fallback') {
+          finalUrl = offer.fallbackUrl;
+        }
+        // action === 'redirect' → finalUrl stays as the normal offer URL
+      }
+    }
+
+    console.log(
+      `[SMART-LINK] ${clickId} (${slug}) dup=${isDuplicate} onDuplicate=${offer.onDuplicate || 'block'} ` +
+      `fallbackUrl=${offer.fallbackUrl || '(none)'} blocked=${isBlocked} reason=${blockReason || '-'} → ` +
+      `${isBlocked && !offer.fallbackUrl ? '(blocked page)' : finalUrl}`
+    );
+
+    if (isBlocked && blockReason === 'frequency_cap') {
+      // onDuplicate='block' never redirects, even if a fallbackUrl is set.
       await logClick(offer, clickId, visitor, req, {
-        isDuplicate: true, isVpn, isSmartLink: true, smartLinkSlug: slug,
+        isDuplicate: true, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
         isBlocked: true, blockReason: 'frequency_cap', redirectUrl: '', startTime,
       });
       return sendBlockedResponse(res, { statusCode: 429 });
     }
 
-    console.log(`[SMART-LINK] ${clickId} (${slug}) → ${finalUrl}`);
+    if (isBlocked && !offer.fallbackUrl) {
+      // Targeting block (bot/geo/device/ip) with no fallback configured.
+      await logClick(offer, clickId, visitor, req, {
+        isDuplicate: false, isBot: filter.isBot, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
+        isBlocked: true, blockReason, redirectUrl: '', startTime,
+      });
+      return sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
+    }
 
-    // Log click
+    // Log click (covers: normal pass-through, targeting-block-with-fallback, dup-fallback, dup-redirect)
     await logClick(offer, clickId, visitor, req, {
-      isDuplicate, isVpn, isSmartLink: true, smartLinkSlug: slug,
-      redirectUrl: finalUrl, startTime,
+      isDuplicate, isBot: filter.isBot, isVpn: filter.isVpn, isSmartLink: true, smartLinkSlug: slug,
+      isBlocked, blockReason, redirectUrl: finalUrl, startTime,
     });
 
     // Redirect — use redirectMode from model ('302', '301', 'meta_refresh', 'javascript')
@@ -184,11 +188,4 @@ async function logClick(offer, clickId, visitor, req, opts = {}) {
   } catch (err) {
     console.error('Failed to log click:', err);
   }
-}
-
-// Used for bot/geo/IP blocks — respects the offer's custom blockedPageMessage.
-// Frequency-cap blocks go through sendBlockedResponse() directly with the
-// generic default message instead (never reveal *why* the visitor was blocked).
-function sendBlockedPage(res, offer) {
-  sendBlockedResponse(res, { statusCode: 403, message: offer.blockedPageMessage || DEFAULT_BLOCKED_MESSAGE });
 }

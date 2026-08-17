@@ -43,6 +43,19 @@ const INVALID_CLICKS_EXPR = {
   ],
 };
 
+/**
+ * Mongo $cond expression for "Unique Clicks" on raw Click aggregations.
+ * Excludes duplicates AND any blocked click (bot/geo/device/ip/frequency-cap)
+ * — a blocked visitor was never actually delivered to the offer.
+ */
+const UNIQUE_CLICKS_EXPR = {
+  $cond: [
+    { $and: [{ $not: '$isDuplicate' }, { $not: '$isBlocked' }] },
+    1,
+    0,
+  ],
+};
+
 /** Build summary metrics object from raw aggregated numbers */
 function buildSummary(raw) {
   const grossClicks = raw.grossClicks || 0;
@@ -154,7 +167,7 @@ exports.conversionReport = async (req, res, next) => {
         $group: {
           _id: null,
           grossClicks: { $sum: 1 },
-          uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
+          uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
         },
@@ -511,7 +524,7 @@ exports.hourlyReport = async (req, res, next) => {
         $group: {
           _id: null,
           grossClicks: { $sum: 1 },
-          uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
+          uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
@@ -541,7 +554,7 @@ exports.hourlyReport = async (req, res, next) => {
         $group: {
           _id: { $dateToString: { format: hourFormat, date: '$clickedAt', timezone } },
           grossClicks: { $sum: 1 },
-          uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
+          uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
@@ -642,7 +655,7 @@ exports.logReport = async (req, res, next) => {
         $group: {
           _id: null,
           grossClicks: { $sum: 1 },
-          uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
+          uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
@@ -780,7 +793,7 @@ exports.exportCsv = async (req, res, next) => {
             $group: {
               _id: { $dateToString: { format: '%Y-%m-%d %H:00', date: '$clickedAt' } },
               grossClicks: { $sum: 1 },
-              uniqueClicks: { $sum: { $cond: [{ $not: '$isDuplicate' }, 1, 0] } },
+              uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
               conversions: { $sum: { $cond: ['$converted', 1, 0] } },
               revenue: { $sum: '$revenue' },
               payout: { $sum: '$payout' },
