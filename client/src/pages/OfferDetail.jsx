@@ -8,6 +8,7 @@ import {
 import api from '../api/client';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber, formatPercent } from '../utils/formatCurrency';
+import { countryName } from '../utils/countries';
 
 const statusColors = {
  active: 'bg-green-100 text-green-800',
@@ -424,7 +425,7 @@ export default function OfferDetail() {
  </span>
  <div className="flex flex-wrap gap-1">
  {offer.geoCountries.map(g => (
- <Badge key={g} color={offer.geoMode === 'exclude' ? 'red' : 'green'}>{g}</Badge>
+ <Badge key={g} color={offer.geoMode === 'exclude' ? 'red' : 'green'}>{countryName(g)} ({g})</Badge>
  ))}
  </div>
  </div>

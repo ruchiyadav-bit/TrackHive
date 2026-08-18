@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ChevronLeft, ChevronRight, ChevronDown, Save, Check, X, Plus, Trash2 } from 'lucide-react';
 import api from '../../api/client';
+import { COUNTRIES, countryName } from '../../utils/countries';
 
 const STEPS = [
  { key: 'general', label: 'General' },
@@ -147,6 +148,145 @@ function TagInput({ label, value = [], onChange, placeholder }) {
  );
 }
 
+/**
+ * Searchable country multi-select.
+ *
+ * Replaces a free-text tag field. geoip returns ISO alpha-2 codes, so anything
+ * other than an exact code ("USA", "United States", "india") matched nothing and
+ * the offer silently blocked every visitor. Selecting from a list removes that
+ * whole class of mistake — the stored value is always a valid code.
+ */
+function CountryPicker({ label, value = [], onChange }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const q = query.trim().toLowerCase();
+  const matches = !q ? [] : COUNTRIES.filter(c =>
+    !value.includes(c.code) &&
+    (c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q)
+  ).slice(0, 8);
+
+  const pick = (code) => {
+    onChange([...new Set([...value, code])]);
+    setQuery('');
+    setOpen(false);
+  };
+
+  return (
+    <div>
+      <Label>{label}</Label>
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {value.map(code => (
+            <span key={code} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700">
+              {countryName(code)} <span className="opacity-60">({code})</span>
+              <button type="button" onClick={() => onChange(value.filter(c => c !== code))} className="hover:text-blue-900">
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <input
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); if (matches[0]) pick(matches[0].code); }
+            if (e.key === 'Escape') setOpen(false);
+          }}
+          placeholder="Country ka naam ya code likho — United States, US, India..."
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        {open && q && (
+          <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+            {matches.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-gray-400">Koi country nahi mili</div>
+            ) : matches.map(c => (
+              <button
+                key={c.code}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pick(c.code)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex justify-between items-center"
+              >
+                <span>{c.name}</span>
+                <code className="text-xs text-gray-400">{c.code}</code>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-gray-400 mt-1">
+        List me se hi chuno — free text likhne se targeting kaam nahi karegi.
+      </p>
+    </div>
+  );
+}
+
+/** Select that also lets the user add a value that isn't in the list yet. */
+function SelectWithAdd({ label, required, value, onChange, options, placeholder, error }) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [extra, setExtra] = useState([]);
+
+  const all = [...new Set([...options, ...extra, ...(value && ![...options, ...extra].includes(value) ? [value] : [])])];
+
+  const commit = () => {
+    const name = draft.trim();
+    if (!name) return;
+    setExtra(prev => [...new Set([...prev, name])]);
+    onChange(name);
+    setDraft('');
+    setAdding(false);
+  };
+
+  if (adding) {
+    return (
+      <div>
+        <Label required={required}>{label}</Label>
+        <div className="flex gap-2">
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commit(); }
+              if (e.key === 'Escape') { setDraft(''); setAdding(false); }
+            }}
+            placeholder="Naya naam likho..."
+            className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button type="button" onClick={commit}
+            className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">Add</button>
+          <button type="button" onClick={() => { setDraft(''); setAdding(false); }}
+            className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700">Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <Label required={required}>{label}</Label>
+        <button type="button" onClick={() => setAdding(true)}
+          className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-0.5">
+          <Plus size={12} /> Add more
+        </button>
+      </div>
+      <select value={value ?? ''} onChange={(e) => onChange(e.target.value)}
+        className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900 ${error ? 'border-red-400' : 'border-gray-200'}`}>
+        {placeholder && <option value="">{placeholder}</option>}
+        {all.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+    </div>
+  );
+}
+
 function SectionHeader({ children }) {
  return <h3 className="text-sm font-semibold text-gray-900 pt-4 pb-1 border-t border-gray-100 mt-4 first:mt-0 first:border-0 first:pt-0">{children}</h3>;
 }
@@ -178,7 +318,7 @@ function StepGeneral({ form, setField, advertisers, offerGroups, errors = {} }) 
  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
  <Select label="Advertiser" required value={form.advertiser} onChange={v => setField('advertiser', v)}
  options={advertisers.map(a => ({ value: a._id, label: a.name }))} placeholder="Select advertiser..." error={errors.advertiser} />
- <Select label="Category" value={form.category} onChange={v => setField('category', v)}
+ <SelectWithAdd label="Category" value={form.category} onChange={v => setField('category', v)}
  options={CATEGORIES} placeholder="Select category..." />
  </div>
  <Select label="Currency" required value={form.currency} onChange={v => setField('currency', v)} options={CURRENCIES} />
@@ -496,7 +636,7 @@ function StepTargeting({ form, setField }) {
  <TagInput label="Carrier" value={form.carriers} onChange={v => setField('carriers', v)} placeholder="Airtel, Jio, Verizon..." />
 
  <SectionHeader>Geolocation</SectionHeader>
- <TagInput label="Countries" value={form.geoCountries} onChange={v => setField('geoCountries', v)} placeholder="US, GB, IN..." />
+ <CountryPicker label="Countries" value={form.geoCountries} onChange={v => setField('geoCountries', v)} />
  <div className="flex gap-4">
  <label className="flex items-center gap-2">
  <input type="radio" checked={form.geoMode === 'include'} onChange={() => setField('geoMode', 'include')} className="text-blue-600" />
@@ -524,7 +664,7 @@ function StepTargeting({ form, setField }) {
  <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
  <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Targeting Summary</h4>
  {form.geoCountries?.length > 0 && (
- <p className="text-sm text-gray-700">Countries ({form.geoMode}): {form.geoCountries.join(', ')}</p>
+ <p className="text-sm text-gray-700">Countries ({form.geoMode}): {form.geoCountries.map(c => `${countryName(c)} (${c})`).join(', ')}</p>
  )}
  {form.deviceTypes?.length > 0 && <p className="text-sm text-gray-700">Devices: {form.deviceTypes.join(', ')}</p>}
  {form.operatingSystems?.length > 0 && <p className="text-sm text-gray-700">OS: {form.operatingSystems.join(', ')}</p>}
