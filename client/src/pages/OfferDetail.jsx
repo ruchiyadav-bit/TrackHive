@@ -152,7 +152,13 @@ export default function OfferDetail() {
  // Build tracking URLs
  const trackingDomain = offer.trackingDomain?.domain || settings.trackingDomain || window.location.origin;
  const baseUrl = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
- const clickUrl = `${baseUrl}/click?offer_id=${offer._id}&sub1={sub1}&sub2={sub2}&source={source}`;
+ // Clean, ready-to-use link. This used to append &sub1={sub1}&sub2={sub2}&source={source},
+ // but nothing replaces those tokens unless the traffic source itself does (Google
+ // Ads, Meta, ...). Pasted as-is they were stored literally as "{sub1}" and polluted
+ // every report. Anyone copying from here is non-technical and will not edit the
+ // URL, so what we hand out must work unchanged. Optional params are documented
+ // underneath instead.
+ const clickUrl = `${baseUrl}/click?offer_id=${offer._id}`;
  const advSecret = typeof offer.advertiser === 'object' ? offer.advertiser?.postbackSecret : null;
  const advNetwork = typeof offer.advertiser === 'object' ? (offer.advertiser?.network || 'custom') : 'custom';
  const preset = presets?.[advNetwork] || presets?.custom;
@@ -258,6 +264,40 @@ export default function OfferDetail() {
  </div>
  )}
  <CopyField label="Click Tracking URL" value={clickUrl} />
+ <details className="-mt-2 mb-3">
+ <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700 select-none">
+ Traffic source track karna hai? (optional)
+ </summary>
+ <div className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 space-y-2">
+ <p>
+ Upar wali link waise hi kaam karti hai — country, device, OS aur browser
+ apne aap record hote hain. Ye params sirf tab jodo jab aapko khud pata karna
+ ho ki traffic kis campaign se aaya.
+ </p>
+ <div>
+ <div className="font-medium text-gray-700 mb-1">Static value (LP button, email):</div>
+ <code className="block bg-white border border-gray-200 rounded px-2 py-1 break-all">
+ {clickUrl}&amp;source=lp&amp;sub1=homepage_button
+ </code>
+ </div>
+ <div>
+ <div className="font-medium text-gray-700 mb-1">Google Ads:</div>
+ <code className="block bg-white border border-gray-200 rounded px-2 py-1 break-all">
+ {clickUrl}&amp;source=google&amp;sub1=&#123;campaignid&#125;&amp;sub2=&#123;keyword&#125;
+ </code>
+ </div>
+ <div>
+ <div className="font-medium text-gray-700 mb-1">Meta / Facebook:</div>
+ <code className="block bg-white border border-gray-200 rounded px-2 py-1 break-all">
+ {clickUrl}&amp;source=facebook&amp;sub1=&#123;&#123;campaign.name&#125;&#125;
+ </code>
+ </div>
+ <p className="text-amber-700">
+ Curly-brace waale tokens sirf tab replace hote hain jab wo platform khud
+ kare. Aise hi kahin bhi paste kar diye to literally save ho jaayenge.
+ </p>
+ </div>
+ </details>
  <CopyField label="Postback URL (S2S)" value={postbackUrl} />
  <div className="grid grid-cols-2 gap-x-6 mt-3">
  <InfoRow label="Tracking Domain" value={offer.trackingDomain?.domain || settings.trackingDomain || '—'} />
