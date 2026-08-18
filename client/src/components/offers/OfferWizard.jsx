@@ -214,11 +214,84 @@ function StepGeneral({ form, setField, advertisers, offerGroups, errors = {} }) 
  );
 }
 
-function StepTracking({ form, setField, trackingDomains, errors = {} }) {
+/**
+ * Inline guidance for the landing page URL.
+ *
+ * The URL is NEVER modified automatically — the user stays in control. We just
+ * show what's wrong and offer a one-click fix, because without {click_id} the
+ * network's postback returns an empty click id and no conversion can ever match.
+ * Re-evaluates whenever the advertiser changes, so switching networks surfaces a
+ * now-stale param instead of silently breaking attribution.
+ */
+function ClickIdHint({ url, advertiser, onApply }) {
+  if (!url?.trim()) return null;
+
+  const expected = (advertiser?.clickIdParam || '').trim() || 'click_id';
+  const found = url.match(/([\w.\-]+)=\{click_id\}/i);
+  const currentParam = found?.[1] || null;
+
+  if (currentParam && currentParam.toLowerCase() === expected.toLowerCase()) {
+    return (
+      <p className="text-xs text-green-700 -mt-2">
+        ✓ Click ID <code className="bg-green-50 px-1 rounded">{currentParam}</code> se pass ho raha hai — conversions match ho paayengi.
+      </p>
+    );
+  }
+
+  // Build the corrected URL: drop any existing {click_id} pair, then insert the
+  // right one BEFORE the #fragment (a param after # never reaches the server).
+  const buildFixed = () => {
+    let base = url.trim();
+    let frag = '';
+    const h = base.indexOf('#');
+    if (h !== -1) { frag = base.slice(h); base = base.slice(0, h); }
+    base = base
+      .replace(/([?&])[\w.\-]+=\{click_id\}&?/gi, '$1')
+      .replace(/[?&]$/, '');
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}${expected}={click_id}${frag}`;
+  };
+
+  const wrongParam = Boolean(currentParam);
+
+  return (
+    <div className="-mt-2 flex gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+      <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+      <div className="text-xs text-amber-900 min-w-0 flex-1">
+        {wrongParam ? (
+          <b>Ye advertiser <code className="bg-amber-100 px-1 rounded">{expected}</code> maangta hai, par URL me <code className="bg-amber-100 px-1 rounded">{currentParam}</code> laga hai.</b>
+        ) : (
+          <b>Is URL me <code className="bg-amber-100 px-1 rounded">{'{click_id}'}</code> nahi hai.</b>
+        )}
+        <div className="mt-1 text-amber-800">
+          Iske bina network ka postback khaali click ID ke saath aayega aur <b>koi conversion match nahi hogi</b>.
+        </div>
+        <div className="mt-2 p-2 bg-white/70 rounded border border-amber-200 font-mono text-[11px] break-all text-gray-700">
+          {buildFixed()}
+        </div>
+        <button
+          type="button"
+          onClick={() => onApply(buildFixed())}
+          className="mt-2 px-3 py-1 bg-amber-600 text-white rounded text-xs font-medium hover:bg-amber-700"
+        >
+          {wrongParam ? 'Theek karo' : 'Add karo'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StepTracking({ form, setField, trackingDomains, advertisers = [], errors = {} }) {
+  const selectedAdvertiser = advertisers.find(a => a._id === form.advertiser);
  return (
  <div className="space-y-4">
  <SectionHeader>Default Landing Page</SectionHeader>
  <Input label="Default Landing Page URL" required value={form.landingPageUrl} onChange={v => setField('landingPageUrl', v)} placeholder="https://advertiser.com/landing" error={errors.landingPageUrl} />
+ <ClickIdHint
+ url={form.landingPageUrl}
+ advertiser={selectedAdvertiser}
+ onApply={(fixed) => setField('landingPageUrl', fixed)}
+ />
 
  <SectionHeader>Tracking Domain</SectionHeader>
  <Select label="Tracking Domain" value={form.trackingDomain} onChange={v => setField('trackingDomain', v)}
@@ -588,7 +661,7 @@ export default function OfferWizard({ offerId }) {
  {/* Step Content */}
  <div className="bg-white rounded-xl border border-gray-200 p-6 min-h-[400px]">
  {step === 0 && <StepGeneral form={form} setField={setField} advertisers={advertisers} offerGroups={offerGroups} errors={errors} />}
- {step === 1 && <StepTracking form={form} setField={setField} trackingDomains={trackingDomains} errors={errors} />}
+ {step === 1 && <StepTracking form={form} setField={setField} trackingDomains={trackingDomains} advertisers={advertisers} errors={errors} />}
  {step === 2 && <StepRevenue form={form} setField={setField} />}
  {step === 3 && <StepAttribution form={form} setField={setField} />}
  {step === 4 && <StepTargeting form={form} setField={setField} />}

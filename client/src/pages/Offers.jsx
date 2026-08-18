@@ -247,7 +247,11 @@ export default function Offers() {
  <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Countries</th>
  <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Revenue</th>
  <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Payout</th>
- <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Clicks</th>
+ {/* This column shows offer.totalClicks, which counts EVERY click including
+     blocked ones — i.e. the same figure Reports calls "Gross Clicks".
+     Reports' own "Clicks" column is gross minus invalid, so the two would
+     disagree whenever traffic gets blocked. Named to match Reports. */}
+ <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap" title="All clicks including blocked — same as Gross Clicks in Reports">Gross Clicks</th>
  <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Conv.</th>
  <th className="text-center px-2 py-3 font-semibold text-gray-600 w-10"></th>
  </tr>
