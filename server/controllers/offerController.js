@@ -75,12 +75,12 @@ exports.createOffer = async (req, res, next) => {
 
 exports.getOffer = async (req, res, next) => {
   try {
-    // The advertiser's postbackSecret is the ONLY thing gating /postback — anyone
-    // holding it can forge conversions with arbitrary revenue. This route is
-    // `auth` only (no authorize()), so it must not hand the secret to every
-    // logged-in user; viewers get it stripped.
-    const canSeeSecret = ['super_admin', 'admin', 'manager'].includes(req.user.role);
-    const advertiserFields = canSeeSecret ? 'name postbackSecret network' : 'name network';
+    // Both roles see the advertiser's postbackSecret: partners are the ones who
+    // paste the postback URL into the network, and the URL is useless without
+    // it. Worth knowing what that grants — the secret is the ONLY thing gating
+    // /postback, so whoever holds it can forge conversions with arbitrary
+    // revenue. If that ever needs narrowing, gate it here on isManager().
+    const advertiserFields = 'name postbackSecret network';
 
     const offer = await Offer.findOne({
       _id: req.params.id,

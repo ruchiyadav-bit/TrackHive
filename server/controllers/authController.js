@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { z } = require('zod');
+const { DEFAULT_ROLE } = require('../config/roles');
 
 const signupSchema = z.object({
   name: z.string().min(1).trim(),
@@ -28,11 +29,14 @@ exports.signup = async (req, res, next) => {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
+    // Role is deliberately NOT read from req.body. The signup form has no role
+    // field, and a hand-crafted request must not be able to grant itself one —
+    // signupSchema drops unknown keys, and the role is pinned here as well.
     const user = new User({
       name,
       email,
       password,
-      role: 'viewer',
+      role: DEFAULT_ROLE,
       status: 'active',
       offerAccess: 'all',
     });

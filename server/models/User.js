@@ -1,15 +1,18 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
+const { ALL_ROLES, DEFAULT_ROLE } = require('../config/roles');
 
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true, minlength: 8 },
+    // Two roles only — see config/roles.js. Everyone starts as a partner;
+    // promotion happens from User Management, never from signup.
     role: {
       type: String,
-      enum: ['super_admin', 'admin', 'manager', 'viewer'],
-      default: 'viewer',
+      enum: ALL_ROLES,
+      default: DEFAULT_ROLE,
     },
     status: {
       type: String,

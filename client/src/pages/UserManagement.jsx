@@ -3,12 +3,11 @@ import { Plus, Pencil, Trash2, X, Eye, EyeOff, UserPlus } from 'lucide-react';
 import api from '../api/client';
 import { useAuth } from '../hooks/useAuth';
 import { useToast } from '../components/ui/Toast';
+import { ROLES, DEFAULT_ROLE, MANAGER, isManager, normalizeRole, roleLabel } from '../utils/roles';
 
 const roleColors = {
- super_admin: 'bg-red-100 text-red-800',
- admin: 'bg-purple-100 text-purple-800',
  manager: 'bg-blue-100 text-blue-800',
- viewer: 'bg-gray-100 text-gray-600',
+ partner: 'bg-gray-100 text-gray-600',
 };
 
 const statusColors = {
@@ -16,9 +15,7 @@ const statusColors = {
  inactive: 'bg-gray-100 text-gray-600',
 };
 
-const ROLES = ['admin', 'manager', 'viewer'];
-
-const emptyForm = { name: '', email: '', password: '', role: 'viewer', status: 'active' };
+const emptyForm = { name: '', email: '', password: '', role: DEFAULT_ROLE, status: 'active' };
 
 export default function UserManagement() {
  const { user: currentUser } = useAuth();
@@ -31,7 +28,16 @@ export default function UserManagement() {
  const [saving, setSaving] = useState(false);
  const [showPassword, setShowPassword] = useState(false);
 
- const isAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
+ const isAdmin = isManager(currentUser);
+
+ // Removing the last manager would make this screen unreachable for everyone,
+ // so the server refuses it. Mirror that here to disable the controls instead
+ // of letting the click come back 403.
+ const activeManagers = users.filter(u => normalizeRole(u.role) === MANAGER && u.status === 'active');
+ const isLastManager = (u) =>
+  normalizeRole(u.role) === MANAGER && activeManagers.length <= 1 && u.status === 'active';
+ const isSelf = (u) => u._id === currentUser?._id;
+ const isLocked = (u) => isSelf(u) || isLastManager(u);
 
  const fetchUsers = async () => {
  try {
@@ -152,14 +158,15 @@ export default function UserManagement() {
  <td className="px-4 py-3 font-medium text-gray-900">{u.name}</td>
  <td className="px-4 py-3 text-gray-600">{u.email}</td>
  <td className="px-4 py-3">
- <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${roleColors[u.role] || ''}`}>
- {u.role}
+ <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${roleColors[normalizeRole(u.role)] || ''}`}>
+ {roleLabel(u.role)}
  </span>
  </td>
  <td className="px-4 py-3">
  <button
- onClick={() => isAdmin && u.role !== 'super_admin' && handleToggleStatus(u)}
- disabled={!isAdmin || u.role === 'super_admin'}
+ onClick={() => isAdmin && !isLocked(u) && handleToggleStatus(u)}
+ disabled={!isAdmin || isLocked(u)}
+ title={isLocked(u) ? 'The last active manager cannot be deactivated' : undefined}
  className="cursor-pointer disabled:cursor-default"
  >
  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusColors[u.status] || ''}`}>
@@ -176,7 +183,7 @@ export default function UserManagement() {
  {isAdmin && (
  <td className="px-4 py-3">
  <div className="flex items-center justify-center gap-1">
- {u.role !== 'super_admin' && (
+ {!isLocked(u) && (
  <>
  <button
  onClick={() => openEdit(u)}
@@ -272,7 +279,7 @@ export default function UserManagement() {
  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white text-gray-900"
  >
  {ROLES.map(r => (
- <option key={r} value={r}>{r}</option>
+ <option key={r.value} value={r.value}>{r.label}</option>
  ))}
  </select>
  </div>

@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { auth, authorize } = require('../middleware/auth');
+const { auth } = require('../middleware/auth');
 const { list, create, get, update, remove, report } = require('../controllers/offerGroupController');
 
 router.get('/', auth, list);
-router.post('/', auth, authorize('super_admin', 'admin', 'manager'), create);
+router.post('/', auth, create);
 router.get('/:id', auth, get);
-router.put('/:id', auth, authorize('super_admin', 'admin', 'manager'), update);
-router.delete('/:id', auth, authorize('super_admin', 'admin'), remove);
+router.put('/:id', auth, update);
+router.delete('/:id', auth, remove);
 router.get('/:id/report', auth, report);
 
 module.exports = router;

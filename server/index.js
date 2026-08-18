@@ -138,7 +138,12 @@ const startServer = async () => {
 
   await connectDB();
 
-  // Seed admin user on first run
+  // Collapse any pre-migration roles BEFORE seeding or the first login — a
+  // stale role now fails the model enum and would break login on save().
+  const { migrateRoles } = require('./utils/migrateRoles');
+  await migrateRoles();
+
+  // Seed the first manager on first run
   const { seedAdmin } = require('./utils/seedAdmin');
   await seedAdmin();
 

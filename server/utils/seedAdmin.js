@@ -1,8 +1,9 @@
 const User = require('../models/User');
+const { MANAGER } = require('../config/roles');
 
 const seedAdmin = async () => {
   try {
-    const existingAdmin = await User.findOne({ role: 'super_admin' });
+    const existingAdmin = await User.findOne({ role: MANAGER });
     if (existingAdmin) return;
 
     if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) {
@@ -11,16 +12,16 @@ const seedAdmin = async () => {
     }
 
     const admin = new User({
-      name: 'Super Admin',
+      name: 'Manager',
       email: process.env.ADMIN_EMAIL,
       password: process.env.ADMIN_PASSWORD,
-      role: 'super_admin',
+      role: MANAGER,
       status: 'active',
       offerAccess: 'all',
     });
 
     await admin.save();
-    console.log(`Super admin seeded: ${admin.email}`);
+    console.log(`Manager account seeded: ${admin.email}`);
   } catch (error) {
     console.error('Error seeding admin:', error.message);
   }

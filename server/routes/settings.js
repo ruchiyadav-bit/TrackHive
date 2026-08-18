@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { auth, authorize } = require('../middleware/auth');
+const { auth } = require('../middleware/auth');
 const { getAll, update, bulkUpdate } = require('../controllers/settingsController');
 
+// Both roles reach Settings; the controller refuses the manager-only keys
+// (tracking domain) for partners rather than blocking the whole route.
 router.get('/', auth, getAll);
-router.put('/bulk', auth, authorize('super_admin', 'admin'), bulkUpdate);
-router.put('/:key', auth, authorize('super_admin', 'admin'), update);
+router.put('/bulk', auth, bulkUpdate);
+router.put('/:key', auth, update);
 
 module.exports = router;

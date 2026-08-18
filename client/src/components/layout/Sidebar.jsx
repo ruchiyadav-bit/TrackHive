@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useAuth } from '../../hooks/useAuth';
+import { isManager } from '../../utils/roles';
 import {
   LayoutDashboard, FileText, BarChart3, Settings,
   ChevronDown, ChevronRight, PanelLeftClose, PanelLeft,
@@ -49,11 +51,25 @@ const navItems = [
     path: '/settings',
     children: [
       { label: 'General', path: '/settings/general', icon: Settings },
-      { label: 'Tracking Domains', path: '/settings/tracking-domains', icon: Globe },
-      { label: 'Users', path: '/settings/users', icon: Users },
+      { label: 'Tracking Domains', path: '/settings/tracking-domains', icon: Globe, managerOnly: true },
+      { label: 'Users', path: '/settings/users', icon: Users, managerOnly: true },
     ],
   },
 ];
+
+/**
+ * Drop manager-only entries for partners, and drop any parent left with no
+ * children — a "Settings" group that expands to nothing reads as a bug.
+ */
+function visibleNav(items, canManage) {
+  return items.reduce((acc, item) => {
+    if (item.managerOnly && !canManage) return acc;
+    if (!item.children) return [...acc, item];
+    const children = item.children.filter(c => !c.managerOnly || canManage);
+    if (!children.length) return acc;
+    return [...acc, { ...item, children }];
+  }, []);
+}
 
 function NavItem({ item, collapsed }) {
   const location = useLocation();
@@ -131,6 +147,8 @@ function NavItem({ item, collapsed }) {
 
 export default function Sidebar({ onCloseMobile }) {
   const [collapsed, setCollapsed] = useState(false);
+  const { user } = useAuth();
+  const items = visibleNav(navItems, isManager(user));
 
   return (
     <aside
@@ -153,7 +171,7 @@ export default function Sidebar({ onCloseMobile }) {
 
       {/* Nav */}
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto" onClick={onCloseMobile}>
-        {navItems.map((item) => (
+        {items.map((item) => (
           <NavItem key={item.path + item.label} item={item} collapsed={collapsed} />
         ))}
       </nav>

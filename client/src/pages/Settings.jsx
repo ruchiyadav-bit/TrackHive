@@ -2,14 +2,18 @@ import { useState, useEffect } from 'react';
 import { Settings as SettingsIcon, Save, Users, Globe, Bell, Link2, Shield, MessageSquare, Send, CheckCircle, AlertCircle } from 'lucide-react';
 import api from '../api/client';
 import { useAuth } from '../hooks/useAuth';
+import { isManager } from '../utils/roles';
 import { useToast } from '../components/ui/Toast';
 
+// managerOnly tabs are removed for partners. The Tracking tab holds the
+// tracking domain, which decides where every click in the account is served
+// from; Users lists every colleague's email.
 const TABS = [
  { key: 'general', label: 'General', icon: SettingsIcon },
- { key: 'tracking', label: 'Tracking', icon: Link2 },
+ { key: 'tracking', label: 'Tracking', icon: Link2, managerOnly: true },
  { key: 'notifications', label: 'Notifications', icon: Bell },
  { key: 'telegram', label: 'Telegram', icon: MessageSquare },
- { key: 'users', label: 'Users', icon: Users },
+ { key: 'users', label: 'Users', icon: Users, managerOnly: true },
  { key: 'security', label: 'Security', icon: Shield },
 ];
 
@@ -53,7 +57,9 @@ export default function Settings() {
  }, []);
 
  useEffect(() => {
- if (tab === 'users') {
+ // /users is manager-only server-side; skip the call for partners instead of
+ // firing a request that can only come back 403.
+ if (tab === 'users' && isManager(user)) {
  api.get('/users').then(r => setUsers(r.data.users || [])).catch(() => {});
  }
  if (tab === 'telegram') {
@@ -62,7 +68,7 @@ export default function Settings() {
  setTgSettings(r.data.settings || {});
  }).catch(() => {}).finally(() => setTgLoading(false));
  }
- }, [tab]);
+ }, [tab, user]);
 
  const updateSetting = (key, value) => {
  setSettings(prev => ({ ...prev, [key]: value }));
@@ -116,7 +122,12 @@ export default function Settings() {
  }));
  };
 
- const isAdmin = user?.role === 'super_admin' || user?.role === 'admin';
+ const isAdmin = isManager(user);
+ const tabs = TABS.filter(t => !t.managerOnly || isAdmin);
+
+ // A partner who was sitting on a manager-only tab when their role changed
+ // would otherwise stay on a tab that no longer exists in the list.
+ const activeTab = tabs.some(t => t.key === tab) ? tab : 'general';
 
  if (loading) {
  return <div className="flex items-center justify-center h-64 text-gray-400">Loading settings...</div>;
@@ -126,7 +137,7 @@ export default function Settings() {
  <div>
  <div className="flex items-center justify-between mb-6">
  <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
- {isAdmin && tab !== 'telegram' && tab !== 'users' && tab !== 'security' && (
+ {isAdmin && activeTab !== 'telegram' && activeTab !== 'users' && activeTab !== 'security' && (
  <button
  onClick={saveSettings}
  disabled={saving}
@@ -135,7 +146,7 @@ export default function Settings() {
  <Save size={16} /> {saving ? 'Saving...' : 'Save Changes'}
  </button>
  )}
- {isAdmin && tab === 'telegram' && (
+ {isAdmin && activeTab === 'telegram' && (
  <button
  onClick={saveTelegram}
  disabled={saving}
@@ -150,14 +161,14 @@ export default function Settings() {
  {/* Sidebar */}
  <div className="w-48 shrink-0">
  <div className="space-y-1">
- {TABS.map(t => {
+ {tabs.map(t => {
  const Icon = t.icon;
  return (
  <button
  key={t.key}
  onClick={() => setTab(t.key)}
  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
- tab === t.key ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+ activeTab === t.key ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
  }`}
  >
  <Icon size={16} /> {t.label}
@@ -169,7 +180,7 @@ export default function Settings() {
 
  {/* Content */}
  <div className="flex-1">
- {tab === 'general' && (
+ {activeTab === 'general' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <h2 className="text-lg font-semibold text-gray-900">General Settings</h2>
  <SettingField label="Site Name" value={settings.siteName || ''} onChange={v => updateSetting('siteName', v)} disabled={!isAdmin} />
@@ -180,7 +191,7 @@ export default function Settings() {
  </div>
  )}
 
- {tab === 'tracking' && (
+ {activeTab === 'tracking' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <h2 className="text-lg font-semibold text-gray-900">Tracking Settings</h2>
  <SettingField label="Tracking Domain" value={settings.trackingDomain || ''} onChange={v => updateSetting('trackingDomain', v)} disabled={!isAdmin}
@@ -196,7 +207,7 @@ export default function Settings() {
  </div>
  )}
 
- {tab === 'notifications' && (
+ {activeTab === 'notifications' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <h2 className="text-lg font-semibold text-gray-900">Notification Settings</h2>
  <SettingToggle label="Email Notifications" value={settings.emailNotifications} onChange={v => updateSetting('emailNotifications', v)} disabled={!isAdmin} />
@@ -208,7 +219,7 @@ export default function Settings() {
  </div>
  )}
 
- {tab === 'telegram' && (
+ {activeTab === 'telegram' && (
  <div className="space-y-4">
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <div className="flex items-center justify-between">
@@ -296,7 +307,7 @@ export default function Settings() {
  </div>
  )}
 
- {tab === 'users' && (
+ {activeTab === 'users' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6">
  <h2 className="text-lg font-semibold text-gray-900 mb-4">User Management</h2>
  {users.length === 0 ? (
@@ -342,7 +353,7 @@ export default function Settings() {
  </div>
  )}
 
- {tab === 'security' && (
+ {activeTab === 'security' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <h2 className="text-lg font-semibold text-gray-900">Security</h2>
  <ChangePasswordForm />

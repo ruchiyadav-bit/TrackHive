@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
+import { isManager } from './utils/roles';
 import Layout from './components/layout/Layout';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
@@ -29,6 +30,23 @@ function ProtectedRoute({ children }) {
     );
   }
   return user ? children : <Navigate to="/login" replace />;
+}
+
+/**
+ * Manager-only pages. A partner who types /settings/users directly lands back
+ * on the dashboard instead of an empty screen that fires 403s.
+ */
+function ManagerRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-gray-400 text-sm">Loading...</div>
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  return isManager(user) ? children : <Navigate to="/" replace />;
 }
 
 function GuestRoute({ children }) {
@@ -84,8 +102,14 @@ export default function App() {
         <Route path="/reports/logs" element={<LogReport />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/settings/*" element={<Settings />} />
-        <Route path="/settings/tracking-domains" element={<TrackingDomains />} />
-        <Route path="/settings/users" element={<UserManagement />} />
+        <Route
+          path="/settings/tracking-domains"
+          element={<ManagerRoute><TrackingDomains /></ManagerRoute>}
+        />
+        <Route
+          path="/settings/users"
+          element={<ManagerRoute><UserManagement /></ManagerRoute>}
+        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

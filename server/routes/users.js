@@ -1,13 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const { auth, authorize } = require('../middleware/auth');
+const { auth, requireManager } = require('../middleware/auth');
 const userController = require('../controllers/userController');
 
-router.get('/', auth, authorize('super_admin', 'admin'), userController.listUsers);
-router.post('/', auth, authorize('super_admin', 'admin'), userController.createUser);
-router.get('/:id', auth, authorize('super_admin', 'admin'), userController.getUser);
-router.put('/:id', auth, authorize('super_admin', 'admin'), userController.updateUser);
-router.delete('/:id', auth, authorize('super_admin', 'admin'), userController.deleteUser);
-router.put('/:id/status', auth, authorize('super_admin', 'admin'), userController.updateUserStatus);
+// Manager-only in full. Partners must not be able to read the user list either
+// — it exposes every colleague's email address.
+router.get('/', auth, requireManager, userController.listUsers);
+router.post('/', auth, requireManager, userController.createUser);
+router.get('/:id', auth, requireManager, userController.getUser);
+router.put('/:id', auth, requireManager, userController.updateUser);
+router.delete('/:id', auth, requireManager, userController.deleteUser);
+router.put('/:id/status', auth, requireManager, userController.updateUserStatus);
 
 module.exports = router;
