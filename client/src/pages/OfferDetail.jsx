@@ -9,6 +9,7 @@ import api from '../api/client';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber, formatPercent } from '../utils/formatCurrency';
 import { countryName } from '../utils/countries';
+import { buildPostbackUrl } from '../utils/postbackUrl';
 
 const statusColors = {
  active: 'bg-green-100 text-green-800',
@@ -163,8 +164,7 @@ export default function OfferDetail() {
  const advSecret = typeof offer.advertiser === 'object' ? offer.advertiser?.postbackSecret : null;
  const advNetwork = typeof offer.advertiser === 'object' ? (offer.advertiser?.network || 'custom') : 'custom';
  const preset = presets?.[advNetwork] || presets?.custom;
- const macros = preset?.macros || { click_id: '{click_id}', revenue: '{revenue}', payout: '{payout}', event: '{event}' };
- const postbackUrl = `${baseUrl}/postback?click_id=${macros.click_id}&revenue=${macros.revenue}&payout=${macros.payout}&event=${macros.event}${advSecret ? `&secret=${advSecret}` : ''}`;
+ const postbackUrl = buildPostbackUrl({ trackingDomain: baseUrl, preset, secret: advSecret });
 
  // Stats
  const cvr = offer.totalClicks > 0 ? (offer.totalConversions / offer.totalClicks) * 100 : 0;

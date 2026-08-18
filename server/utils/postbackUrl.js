@@ -21,12 +21,18 @@ function buildPostbackUrl({ trackingDomain, network, secret }) {
     .map(([k, v]) => `&${k}=${v}`)
     .join('');
 
+  // txn_id lives in `macros` rather than `extraParams` and was being dropped
+  // here, so the network's own transaction id never reached us and conversions
+  // could not be reconciled against the network's reporting.
+  const txn = m.txn_id ? `&txn_id=${m.txn_id}` : '';
+
   return (
     `${base}/postback` +
     `?click_id=${m.click_id}` +
     `&revenue=${m.revenue}` +
     `&payout=${m.payout}` +
     `&event=${m.event}` +
+    txn +
     extra +
     `${secret ? `&secret=${secret}` : ''}`
   );

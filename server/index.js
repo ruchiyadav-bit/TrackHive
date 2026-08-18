@@ -130,6 +130,12 @@ app.use(errorHandler);
 
 // Start server
 const startServer = async () => {
+  // Fail fast on a malformed network preset. A bad click_id macro loses every
+  // conversion from that network silently, so this must abort the boot rather
+  // than warn into a log nobody reads.
+  const { validatePresets } = require('./config/validatePresets');
+  validatePresets(require('./config/networkPresets'));
+
   await connectDB();
 
   // Seed admin user on first run

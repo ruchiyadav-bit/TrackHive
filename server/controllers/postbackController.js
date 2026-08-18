@@ -5,6 +5,7 @@ const DailyStat = require('../models/DailyStat');
 const Notification = require('../models/Notification');
 const { updateDailyStats } = require('../utils/clickHelpers');
 const { getReportTimezone, todayInTz, monthStartInTz } = require('../utils/appTime');
+const networkPresets = require('../config/networkPresets');
 
 /** Thrown when a postback sends a revenue/payout value that isn't a finite number. */
 class BadAmount extends Error {
@@ -43,13 +44,19 @@ exports.handlePostback = async (req, res) => {
     }
 
     // --- FIX 1: Postback secret verification ---
-    // If offer has an advertiser with a postbackSecret, require it
+    // The secret lives on the ADVERTISER, not the offer, so one postback URL
+    // serves every offer under that advertiser. The network is read here too —
+    // it decides how this network spells "reversed" further down.
+    let advertiserNetwork = 'custom';
     if (offer.advertiser) {
       const advertiser = await Advertiser.findById(offer.advertiser);
-      if (advertiser && advertiser.postbackSecret) {
-        const providedSecret = p.secret || p.token || '';
-        if (providedSecret !== advertiser.postbackSecret) {
-          return res.status(403).json({ error: 'Invalid postback secret' });
+      if (advertiser) {
+        advertiserNetwork = advertiser.network || 'custom';
+        if (advertiser.postbackSecret) {
+          const providedSecret = p.secret || p.token || '';
+          if (providedSecret !== advertiser.postbackSecret) {
+            return res.status(403).json({ error: 'Invalid postback secret' });
+          }
         }
       }
     }
@@ -84,9 +91,22 @@ exports.handlePostback = async (req, res) => {
     const operation = String(p.postback_operation || p.operation || '').trim().toLowerCase();
     const convStatus = String(p.conversion_status || p.status || '').trim().toLowerCase();
 
+    // Word statuses every network shares. Networks that report numerically
+    // (Affise: 3 = Declined) or with their own vocabulary (Impact: MODIFIED)
+    // extend these through their preset's `lifecycle` block, so adding a
+    // network never means editing this controller.
     const REVERSED = ['rejected', 'declined', 'reversed', 'cancelled', 'canceled', 'refunded', 'deleted'];
-    const isReversal = operation === 'delete' || REVERSED.includes(convStatus);
-    const isUpdate = operation === 'update' && !isReversal;
+    const UPDATED = ['modified', 'updated', 'adjusted', 'amended'];
+
+    const lifecycle = networkPresets[advertiserNetwork]?.lifecycle || {};
+    const reversedValues = [...REVERSED, ...(lifecycle.reversed || []).map(v => String(v).toLowerCase())];
+    const updatedValues = [...UPDATED, ...(lifecycle.updated || []).map(v => String(v).toLowerCase())];
+
+    // An explicit operation always wins over a status guess.
+    const isReversal = operation === 'delete' ||
+      (operation !== 'update' && operation !== 'create' && reversedValues.includes(convStatus));
+    const isUpdate = !isReversal &&
+      (operation === 'update' || (!operation && updatedValues.includes(convStatus)));
 
     // Events already recorded on this click, as a list. conversionEvent is
     // stored comma-joined; the old code compared the incoming event against the

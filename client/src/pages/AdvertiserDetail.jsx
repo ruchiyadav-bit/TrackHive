@@ -8,6 +8,7 @@ import {
 import api from '../api/client';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber, formatPercent } from '../utils/formatCurrency';
+import { buildPostbackUrl } from '../utils/postbackUrl';
 
 const statusColors = {
   active: 'bg-green-100 text-green-800',
@@ -253,8 +254,11 @@ export default function AdvertiserDetail() {
   const trackingDomain = settings.trackingDomain || window.location.origin;
   const baseUrl = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
   const preset = presets?.[network] || presets?.custom;
-  const macros = preset?.macros || { click_id: '{click_id}', revenue: '{revenue}', payout: '{payout}', event: '{event}' };
-  const postbackUrl = `${baseUrl}/postback?click_id=${macros.click_id}&revenue=${macros.revenue}&payout=${macros.payout}&event=${macros.event}${advertiser.postbackSecret ? `&secret=${advertiser.postbackSecret}` : ''}`;
+  const postbackUrl = buildPostbackUrl({
+    trackingDomain: baseUrl,
+    preset,
+    secret: advertiser.postbackSecret,
+  });
 
   // Mask secret
   const secret = advertiser.postbackSecret || '';

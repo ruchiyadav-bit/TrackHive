@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Edit2, Trash2, Copy, ExternalLink, Search, AlertTriangle, Check, Info } from 'lucide-react';
 import api from '../api/client';
+import { buildPostbackUrl } from '../utils/postbackUrl';
 
 const statusColors = {
  active: 'bg-green-100 text-green-800',
@@ -67,22 +68,13 @@ export default function Advertisers() {
 
  useEffect(() => { fetchAdvertisers(); }, [search]);
 
- // Build postback URL using network presets
- const buildPostbackUrl = (adv) => {
+ // Build postback URL using network presets. Delegates to the shared builder
+ // so this list, the advertiser page and the offer page can never drift apart.
+ const postbackUrlFor = (adv) => {
   if (!trackingDomain || !presets) return null;
-  const network = adv.network || 'custom';
-  const preset = presets[network] || presets.custom;
+  const preset = presets[adv.network || 'custom'] || presets.custom;
   if (!preset) return null;
-  const m = preset.macros;
-  const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
-  return (
-   `${base}/postback` +
-   `?click_id=${m.click_id}` +
-   `&revenue=${m.revenue}` +
-   `&payout=${m.payout}` +
-   `&event=${m.event}` +
-   `${adv.postbackSecret ? `&secret=${adv.postbackSecret}` : ''}`
-  );
+  return buildPostbackUrl({ trackingDomain, preset, secret: adv.postbackSecret });
  };
 
  const openAdd = () => {
@@ -138,7 +130,7 @@ export default function Advertisers() {
  };
 
  const copyUrl = (adv) => {
-  const url = buildPostbackUrl(adv);
+  const url = postbackUrlFor(adv);
   if (!url) return;
   navigator.clipboard.writeText(url);
   setCopied(adv._id);
@@ -197,7 +189,7 @@ export default function Advertisers() {
       <tbody className="divide-y divide-gray-100">
        {advertisers.map((adv) => {
         const network = adv.network || 'custom';
-        const url = buildPostbackUrl(adv);
+        const url = postbackUrlFor(adv);
         return (
         <tr key={adv._id} className="hover:bg-gray-50">
          <td className="px-4 py-3">
@@ -353,9 +345,11 @@ export default function Advertisers() {
           {(() => {
            const preset = presets[form.network] || presets.custom;
            if (!preset) return '';
-           const m = preset.macros;
-           const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
-           return `${base}/postback?click_id=${m.click_id}&revenue=${m.revenue}&payout=${m.payout}&event=${m.event}&secret=${editing?.postbackSecret || '{auto-generated}'}`;
+           return buildPostbackUrl({
+            trackingDomain,
+            preset,
+            secret: editing?.postbackSecret || '{auto-generated}',
+           });
           })()}
          </code>
          <p className="text-[11px] text-gray-400">
@@ -364,6 +358,22 @@ export default function Advertisers() {
          {form.network === 'custom' && (
           <p className="text-[11px] text-amber-500 mt-1 flex items-center gap-1">
            <AlertTriangle size={10} /> Default macros — verify with your advertiser's docs, otherwise conversions won't match
+          </p>
+         )}
+         {/* A preset nobody has checked against the network's own docs is the
+             same risk as 'custom', just less obvious — say so before it costs
+             a month of unattributed conversions. */}
+         {form.network !== 'custom' && presets[form.network]?.verified === false && (
+          <p className="text-[11px] text-amber-500 mt-1 flex items-start gap-1">
+           <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+           <span>
+            These macros are unverified. Confirm them against{' '}
+            {presets[form.network]?.docsUrl ? (
+             <a href={presets[form.network].docsUrl} target="_blank" rel="noreferrer" className="underline">
+              {presets[form.network].label} docs
+             </a>
+            ) : 'the network docs'}{' '}before sending live traffic.
+           </span>
           </p>
          )}
         </div>
