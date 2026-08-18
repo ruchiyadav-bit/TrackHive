@@ -8,17 +8,58 @@ const UAParser = require('ua-parser-js');
 exports.generateClickId = () => uuidv4().replace(/-/g, '');
 
 /**
+ * Private / reserved ranges. An address in one of these can never be a real
+ * visitor — it is the load balancer or another internal hop.
+ */
+const PRIVATE_IP = /^(?:10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|0\.|::1$|f[cd][0-9a-f]{2}:|fe80:)/i;
+
+function isPublicIp(ip) {
+  if (!ip) return false;
+  return !PRIVATE_IP.test(String(ip).replace(/^::ffff:/, ''));
+}
+
+/**
+ * Work out the visitor's real IP.
+ *
+ * Two failure modes to avoid:
+ *   1. Reading x-forwarded-for[0] blindly — a proxy APPENDS the real client IP,
+ *      so the leftmost entry is whatever the client itself sent. Anyone could
+ *      add `X-Forwarded-For: 8.8.8.8` and pick their own country, defeating geo
+ *      targeting, the IP blocklist and the frequency cap.
+ *   2. Trusting req.ip alone — it depends on TRUST_PROXY matching the real hop
+ *      count. Render sits behind more than one hop, so with TRUST_PROXY=1
+ *      req.ip came back as an internal 10.x address, geoip resolved it to 'XX'
+ *      and every visitor got geo-blocked.
+ *
+ * So: prefer req.ip when it is a real public address (that is the correct,
+ * proxy-aware answer), and only if it isn't, scan the forwarded chain for the
+ * first public address. Internal hops are skipped either way.
+ */
+function resolveClientIp(req) {
+  const clean = (v) => String(v || '').trim().replace(/^::ffff:/, '');
+
+  const direct = clean(req.ip);
+  if (isPublicIp(direct)) return direct;
+
+  const chain = String(req.headers['x-forwarded-for'] || '')
+    .split(',')
+    .map(clean)
+    .filter(Boolean);
+  const firstPublic = chain.find(isPublicIp);
+  if (firstPublic) return firstPublic;
+
+  const realIp = clean(req.headers['x-real-ip']);
+  if (isPublicIp(realIp)) return realIp;
+
+  // Nothing public anywhere — local dev, or a health check from inside the network.
+  return direct || clean(req.socket?.remoteAddress) || '0.0.0.0';
+}
+
+exports.isPublicIp = isPublicIp;
+exports.resolveClientIp = resolveClientIp;
+
+/**
  * Parse visitor info from request.
- *
- * IP RESOLUTION — this used to read `x-forwarded-for`.split(',')[0], i.e. the
- * LEFTMOST entry. A proxy APPENDS the real client IP to that header, so the
- * leftmost value is whatever the client itself sent: anyone could add
- * `X-Forwarded-For: 8.8.8.8` and be geolocated as that IP. That silently
- * defeated geo targeting, the IP blocklist and the per-IP frequency cap.
- *
- * `req.ip` is the correct source: Express walks the header from the right using
- * `app.set('trust proxy', N)` (set from TRUST_PROXY in index.js), so it returns
- * the address the outermost trusted proxy actually saw.
  *
  * TEST OVERRIDE — set ALLOW_TEST_GEO=1 to enable `?test_ip=` / `?test_country=`
  * on tracking links, so geo/device rules can be exercised without a VPN. Keep it
@@ -27,15 +68,7 @@ exports.generateClickId = () => uuidv4().replace(/-/g, '');
 exports.parseVisitorInfo = (req) => {
   const allowTestGeo = process.env.ALLOW_TEST_GEO === '1';
 
-  let ip = req.ip
-    || req.headers['x-real-ip']
-    || req.socket?.remoteAddress
-    || '0.0.0.0';
-
-  // Express reports IPv4-mapped IPv6 as ::ffff:1.2.3.4 — geoip-lite wants the
-  // plain IPv4 form.
-  ip = String(ip).replace(/^::ffff:/, '');
-
+  let ip = resolveClientIp(req);
   if (allowTestGeo && req.query.test_ip) {
     ip = String(req.query.test_ip).trim();
   }

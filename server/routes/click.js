@@ -14,6 +14,14 @@ router.get('/whoami', (req, res) => {
   res.json({
     ip: v.ip,
     country: v.country,
+    // How the IP was arrived at — makes a wrong TRUST_PROXY / extra proxy hop
+    // obvious instead of silently producing country 'XX'.
+    ipSource: {
+      reqIp: req.ip,
+      xForwardedFor: req.headers['x-forwarded-for'] || null,
+      xRealIp: req.headers['x-real-ip'] || null,
+      trustProxy: Number(process.env.TRUST_PROXY || 1),
+    },
     region: v.region || null,
     city: v.city || null,
     device: v.device,
