@@ -6,6 +6,7 @@ const COLUMNS = [
   { key: 'offerName', label: 'Offer', align: 'left', sortable: true },
   { key: 'status', label: 'Status', align: 'left', sortable: false },
   { key: 'blockReason', label: 'Block Reason', align: 'left', sortable: false },
+  { key: 'conversionStatus', label: 'Conv. Status', align: 'left', sortable: false },
   { key: 'ip', label: 'IP', align: 'left', sortable: false },
   { key: 'country', label: 'Country', align: 'left', sortable: false },
   { key: 'device', label: 'Device', align: 'left', sortable: false },
@@ -30,6 +31,14 @@ function renderCell(row, key) {
       return row.blockReason
         ? <code className="text-[11px] bg-gray-100 px-1 py-0.5 rounded text-gray-600">{row.blockReason}</code>
         : <span className="text-gray-300 text-xs">—</span>;
+    case 'conversionStatus': {
+      if (!row.conversionStatus) return <span className="text-gray-300 text-xs">—</span>;
+      const s = row.conversionStatus;
+      const tone = s === 'approved' ? 'bg-green-100 text-green-700'
+        : s === 'reversed' ? 'bg-red-100 text-red-700'
+        : 'bg-amber-100 text-amber-700';
+      return <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${tone}`}>{s}</span>;
+    }
     case 'ip':
       return <code className="text-xs bg-gray-100 px-1 py-0.5 rounded text-gray-700">{row.ip}</code>;
     case 'clickId':

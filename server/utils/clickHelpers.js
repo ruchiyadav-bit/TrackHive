@@ -8,22 +8,51 @@ const UAParser = require('ua-parser-js');
 exports.generateClickId = () => uuidv4().replace(/-/g, '');
 
 /**
- * Parse visitor info from request
+ * Parse visitor info from request.
+ *
+ * IP RESOLUTION — this used to read `x-forwarded-for`.split(',')[0], i.e. the
+ * LEFTMOST entry. A proxy APPENDS the real client IP to that header, so the
+ * leftmost value is whatever the client itself sent: anyone could add
+ * `X-Forwarded-For: 8.8.8.8` and be geolocated as that IP. That silently
+ * defeated geo targeting, the IP blocklist and the per-IP frequency cap.
+ *
+ * `req.ip` is the correct source: Express walks the header from the right using
+ * `app.set('trust proxy', N)` (set from TRUST_PROXY in index.js), so it returns
+ * the address the outermost trusted proxy actually saw.
+ *
+ * TEST OVERRIDE — set ALLOW_TEST_GEO=1 to enable `?test_ip=` / `?test_country=`
+ * on tracking links, so geo/device rules can be exercised without a VPN. Keep it
+ * OFF in production: it lets any visitor choose their own country.
  */
 exports.parseVisitorInfo = (req) => {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+  const allowTestGeo = process.env.ALLOW_TEST_GEO === '1';
+
+  let ip = req.ip
     || req.headers['x-real-ip']
-    || req.socket.remoteAddress
+    || req.socket?.remoteAddress
     || '0.0.0.0';
+
+  // Express reports IPv4-mapped IPv6 as ::ffff:1.2.3.4 — geoip-lite wants the
+  // plain IPv4 form.
+  ip = String(ip).replace(/^::ffff:/, '');
+
+  if (allowTestGeo && req.query.test_ip) {
+    ip = String(req.query.test_ip).trim();
+  }
 
   const ua = new UAParser(req.headers['user-agent']);
   const geo = geoip.lookup(ip) || {};
+
+  let country = geo.country || 'XX';
+  if (allowTestGeo && req.query.test_country) {
+    country = String(req.query.test_country).trim().toUpperCase();
+  }
 
   return {
     ip,
     userAgent: req.headers['user-agent'] || '',
     referer: req.headers['referer'] || req.query.ref || '',
-    country: geo.country || 'XX',
+    country,
     region: geo.region || '',
     city: geo.city || '',
     device: ua.getDevice().type || 'desktop',
@@ -148,7 +177,16 @@ exports.checkGeoTarget = (offer, country) => {
   // ('include' | 'exclude'). Previously read the non-existent offer.geoTargets /
   // geoMode === 'blacklist', so geo targeting silently never applied.
   if (!offer.geoCountries || offer.geoCountries.length === 0) return true;
-  const isInList = offer.geoCountries.includes(country);
+
+  // "Countries" is a free-text tag field in the wizard, so a user can easily
+  // enter "us" or " US ". geoip returns an upper-case ISO-3166 alpha-2 code, and
+  // the old comparison was an exact case-sensitive match — "us" never matched
+  // "US" and the offer blocked everyone. Normalise both sides.
+  const norm = (v) => String(v || '').trim().toUpperCase();
+  const list = offer.geoCountries.map(norm).filter(Boolean);
+  if (!list.length) return true;
+
+  const isInList = list.includes(norm(country));
   return offer.geoMode === 'exclude' ? !isInList : isInList;
 };
 
@@ -180,7 +218,9 @@ exports.replaceMacros = (url, data) => {
  * Update daily stats atomically
  */
 exports.updateDailyStats = async (DailyStat, offerId, offerName, data) => {
-  const today = new Date().toISOString().split('T')[0];
+  // data.date lets a correction be applied to the day it belongs to (e.g.
+  // reversing a conversion that was recorded last week) instead of today.
+  const today = data.date || new Date().toISOString().split('T')[0];
   const update = { $inc: {} };
 
   if (data.click) {
@@ -214,7 +254,9 @@ exports.updateDailyStats = async (DailyStat, offerId, offerName, data) => {
   }
 
   if (data.conversion) {
-    update.$inc.conversions = 1;
+    // conversionDelta is normally +1, but 0 for an amount-only update and -1
+    // when a conversion is reversed. revenue/payout may be negative for those.
+    update.$inc.conversions = data.conversionDelta === undefined ? 1 : data.conversionDelta;
     update.$inc.revenue = data.revenue || 0;
     update.$inc.payout = data.payout || 0;
     update.$inc.profit = (data.revenue || 0) - (data.payout || 0);

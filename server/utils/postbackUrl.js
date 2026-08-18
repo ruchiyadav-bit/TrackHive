@@ -13,12 +13,21 @@ function buildPostbackUrl({ trackingDomain, network, secret }) {
   const preset = presets[network] || presets.custom;
   const m = preset.macros;
   const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
+  // Some networks expose extra signals worth carrying (e.g. Katalys sends an
+  // approval status and a create/update/delete operation). TrackHive ignores
+  // unknown params today, but including them means the URL already pasted into
+  // the network stays correct once they are handled.
+  const extra = Object.entries(preset.extraParams || {})
+    .map(([k, v]) => `&${k}=${v}`)
+    .join('');
+
   return (
     `${base}/postback` +
     `?click_id=${m.click_id}` +
     `&revenue=${m.revenue}` +
     `&payout=${m.payout}` +
     `&event=${m.event}` +
+    extra +
     `${secret ? `&secret=${secret}` : ''}`
   );
 }

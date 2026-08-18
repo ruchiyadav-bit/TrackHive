@@ -47,6 +47,11 @@ const clickSchema = new mongoose.Schema(
     payout: { type: Number, default: 0 },
     profit: { type: Number, default: 0 },
     conversionEvent: String,
+    // Approval status reported by the network (Katalys sends {conversion_status};
+    // only 'approved' conversions are actually paid). 'reversed' means the
+    // network later deleted/rejected it and we backed the amounts out.
+    conversionStatus: { type: String, default: '' },
+    reversedAt: Date,
 
     // Redirect info
     redirectUrl: String,

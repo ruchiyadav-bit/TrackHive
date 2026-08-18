@@ -13,7 +13,7 @@ const advertiserSchema = new mongoose.Schema(
     },
     network: {
       type: String,
-      enum: ['impact', 'everflow', 'affise', 'trackier', 'cellxpert', 'custom'],
+      enum: ['impact', 'everflow', 'affise', 'trackier', 'cellxpert', 'katalys', 'custom'],
       default: 'custom',
     },
     clickIdParam: { type: String, default: 'click_id', trim: true },

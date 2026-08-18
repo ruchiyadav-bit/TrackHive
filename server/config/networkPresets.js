@@ -71,6 +71,34 @@ module.exports = {
     },
     instruction: 'Contact your affiliate manager to set this up',
   },
+  katalys: {
+    label: 'Katalys',
+    // Katalys runs on TUNE (track.revoffers.com/aff_c?offer_id=..&aff_id=..) but
+    // publishes its OWN replacement-token list, which differs from stock TUNE:
+    // the sub-id token is {aff_sub1} (not TUNE's {aff_sub}) and there is no
+    // {goal_name} — the nearest equivalent is {action_type}. Values below are
+    // taken from kb.katalys.com/kb/postback-replacement-tokens.
+    clickIdParam: 'aff_sub1',
+    macros: {
+      click_id: '{aff_sub1}',
+      // On Katalys {payout} is "the payout owed to the partner" — i.e. what
+      // Katalys pays US. That is our revenue. {cost} and {order_value} exist but
+      // are advertiser-only and will come back empty for a partner account.
+      // We pay nobody downstream, so payout is 0 and profit == revenue.
+      revenue:  '{payout}',
+      payout:   '0',
+      event:    '{action_type}',
+      txn_id:   '{transaction_id}',
+    },
+    // Katalys can fire create / update / delete notifications and reports an
+    // approval status. We pass both through so the postback URL is already
+    // correct if/when TrackHive learns to act on them — today they are ignored.
+    extraParams: {
+      conversion_status: '{conversion_status}',
+      postback_operation: '{postback_operation}',
+    },
+    instruction: 'Paste in: app.katalys.com → Postbacks → Add Postback → Webhook Notification. Set Use Case so it only fires on approved conversions.',
+  },
   custom: {
     label: 'Custom / Other',
     clickIdParam: 'click_id',

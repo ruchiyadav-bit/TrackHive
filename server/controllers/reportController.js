@@ -749,7 +749,7 @@ exports.logReport = async (req, res, next) => {
       .sort({ [sortField]: sortDir })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .select('clickId offerId offerName clickedAt ip country city device os browser source subId1 subId2 isDuplicate isBlocked isBot isVpn blockReason converted conversionAt revenue payout referrer redirectUrl userAgent')
+      .select('clickId offerId offerName clickedAt ip country city device os browser source subId1 subId2 isDuplicate isBlocked isBot isVpn blockReason converted conversionAt conversionStatus revenue payout referrer redirectUrl userAgent')
       .lean();
 
     const rows = clicks.map(c => {
@@ -785,6 +785,9 @@ exports.logReport = async (req, res, next) => {
         blockReason: c.blockReason || '',
         converted: c.converted || false,
         conversionAt: c.conversionAt || null,
+        // Approval status the network reported (Katalys: approved / pending /
+        // reversed). Empty for networks that don't send one.
+        conversionStatus: c.conversionStatus || '',
         revenue: Number((c.revenue || 0).toFixed(2)),
         payout: Number((c.payout || 0).toFixed(2)),
         profit: Number(((c.revenue || 0) - (c.payout || 0)).toFixed(2)),

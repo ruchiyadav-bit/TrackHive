@@ -78,6 +78,16 @@ exports.handlePostback = async (req, res) => {
     // --- FIX 2: Multi-event conversion support ---
     const eventName = p.event || p.goal || '';
 
+    // --- Conversion lifecycle (Katalys sends these; most networks don't) ---
+    // {postback_operation} = create | update | delete
+    // {conversion_status}  = only 'approved' conversions are actually paid
+    const operation = String(p.postback_operation || p.operation || '').trim().toLowerCase();
+    const convStatus = String(p.conversion_status || p.status || '').trim().toLowerCase();
+
+    const REVERSED = ['rejected', 'declined', 'reversed', 'cancelled', 'canceled', 'refunded', 'deleted'];
+    const isReversal = operation === 'delete' || REVERSED.includes(convStatus);
+    const isUpdate = operation === 'update' && !isReversal;
+
     // Events already recorded on this click, as a list. conversionEvent is
     // stored comma-joined; the old code compared the incoming event against the
     // whole joined string, so after two events ANY replay (`signup` vs
@@ -87,7 +97,11 @@ exports.handlePostback = async (req, res) => {
     // Check duplicate logic: if already converted, allow only if:
     // 1. allowDuplicateConversions is enabled on the offer, OR
     // 2. A genuinely new event name is provided (multi-event support)
-    if (click.converted) {
+    //
+    // Skipped for update/delete — those are CORRECTIONS to an existing
+    // conversion, so hitting this guard would 409 them and the correction
+    // would be silently lost. They are handled in their own block below.
+    if (click.converted && !isReversal && !isUpdate) {
       const isDifferentEvent = eventName && !recordedEvents.includes(eventName);
       if (!offer.allowDuplicateConversions && !isDifferentEvent) {
         return res.status(409).json({ error: 'Already converted', conversionId: click.conversionId });
@@ -144,6 +158,87 @@ exports.handlePostback = async (req, res) => {
     }
 
     const profit = revenue - payout;
+
+    // ── REVERSAL / UPDATE ──────────────────────────────────────────────────
+    // Handled before the create path because both operate on a click that is
+    // ALREADY converted — the normal duplicate guard would otherwise reject
+    // them with 409 and the correction would be silently dropped.
+    if (isReversal || isUpdate) {
+      const current = await Click.findOne({ clickId });
+
+      if (!current?.converted) {
+        // Nothing to correct. A delete for a conversion we never recorded is
+        // a no-op, not an error.
+        return res.json({
+          success: true,
+          clickId,
+          operation: isReversal ? 'delete' : 'update',
+          applied: false,
+          reason: 'Click has no recorded conversion',
+        });
+      }
+
+      // Deltas needed to move the stored totals to their new value.
+      const dRevenue = (isReversal ? 0 : revenue) - (current.revenue || 0);
+      const dPayout  = (isReversal ? 0 : payout)  - (current.payout  || 0);
+      const dProfit  = dRevenue - dPayout;
+      const dConv    = isReversal ? -1 : 0;
+
+      const set = isReversal
+        ? {
+            converted: false,
+            revenue: 0, payout: 0, profit: 0,
+            conversionStatus: 'reversed',
+            reversedAt: new Date(),
+          }
+        : {
+            revenue, payout, profit,
+            conversionStatus: convStatus || current.conversionStatus || '',
+          };
+
+      await Click.updateOne({ clickId }, { $set: set });
+
+      await Promise.all([
+        Offer.updateOne(
+          { _id: offer._id },
+          {
+            $inc: {
+              totalConversions: dConv,
+              totalRevenue: dRevenue,
+              totalPayout: dPayout,
+              totalProfit: dProfit,
+            },
+          }
+        ),
+        // Apply the correction to the day the conversion originally landed on,
+        // not today.
+        updateDailyStats(DailyStat, offer._id, offer.name, {
+          conversion: true,
+          conversionDelta: dConv,
+          revenue: dRevenue,
+          payout: dPayout,
+          date: (current.conversionAt || current.clickedAt || new Date())
+            .toISOString().split('T')[0],
+        }),
+      ]);
+
+      console.log(
+        `[POSTBACK] ${clickId} ${isReversal ? 'REVERSED' : 'UPDATED'} ` +
+        `status=${convStatus || '-'} dRevenue=${dRevenue.toFixed(2)}`
+      );
+
+      return res.json({
+        success: true,
+        clickId,
+        conversionId: current.conversionId,
+        operation: isReversal ? 'delete' : 'update',
+        applied: true,
+        revenue: isReversal ? 0 : revenue,
+        payout: isReversal ? 0 : payout,
+        profit: isReversal ? 0 : profit,
+      });
+    }
+
     const newConversionId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
     // Claim the first conversion ATOMICALLY. Networks routinely fire parallel
@@ -159,6 +254,7 @@ exports.handlePostback = async (req, res) => {
           conversionAt: new Date(),
           revenue, payout, profit,
           conversionEvent: eventName,
+          conversionStatus: convStatus,
         },
       },
       { new: true }
@@ -220,6 +316,7 @@ exports.handlePostback = async (req, res) => {
       clickId,
       event: eventName || undefined,
       txnId: txnId || undefined,
+      status: convStatus || undefined,
       revenue,
       payout,
       profit,
