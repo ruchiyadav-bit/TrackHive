@@ -18,6 +18,9 @@ function isPublicIp(ip) {
   return !PRIVATE_IP.test(String(ip).replace(/^::ffff:/, ''));
 }
 
+/** Throttles the TRUST_PROXY misconfiguration warning below to once per 10 min. */
+let lastTrustProxyWarn = 0;
+
 /**
  * Work out the visitor's real IP.
  *
@@ -46,7 +49,20 @@ function resolveClientIp(req) {
     .map(clean)
     .filter(Boolean);
   const firstPublic = chain.find(isPublicIp);
-  if (firstPublic) return firstPublic;
+  if (firstPublic) {
+    // req.ip was internal, so TRUST_PROXY doesn't match the real hop count.
+    // The fallback below is correct but weaker (a client could prepend a fake
+    // public IP). Say so — loudly enough to notice, throttled so it can't flood.
+    if (chain.length && Date.now() - lastTrustProxyWarn > 600000) {
+      lastTrustProxyWarn = Date.now();
+      console.warn(
+        `[IP] TRUST_PROXY=${process.env.TRUST_PROXY || 1} looks wrong: req.ip='${direct}' is internal. ` +
+        `x-forwarded-for has ${chain.length} entries, so set TRUST_PROXY=${chain.length} ` +
+        `(Render → Environment) to make req.ip authoritative and block IP spoofing.`
+      );
+    }
+    return firstPublic;
+  }
 
   const realIp = clean(req.headers['x-real-ip']);
   if (isPublicIp(realIp)) return realIp;
