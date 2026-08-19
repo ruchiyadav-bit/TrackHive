@@ -45,3 +45,35 @@ export function buildPostbackUrl({ trackingDomain, preset, secret }) {
 
   return `${base}/postback?${parts.join('&')}`;
 }
+
+/**
+ * Which domain an advertiser's postback URL is built on.
+ *
+ * Order matters and is deliberate:
+ *   1. the advertiser's own tracking domain — set once, never drifts
+ *   2. the account default from Settings
+ *   3. the first verified domain, only as a last resort
+ *
+ * Step 3 is why this had to become explicit: with one domain it is invisibly
+ * correct, but with five it picks an arbitrary one, and the postback already
+ * registered on the network would not match.
+ *
+ * Every page that renders a postback URL must call this — three pages each
+ * resolved it differently, so the same advertiser showed different URLs.
+ */
+export function resolveAdvertiserDomain(advertiser, settings, verifiedDomains = []) {
+  const own = typeof advertiser?.trackingDomain === 'object'
+    ? advertiser?.trackingDomain?.domain
+    : null;
+
+  return own
+    || settings?.trackingDomain
+    || verifiedDomains[0]?.domain
+    || '';
+}
+
+/** Prefix a bare host with https:// — domains are stored without a scheme. */
+export function toBaseUrl(domain) {
+  if (!domain) return '';
+  return domain.startsWith('http') ? domain : `https://${domain}`;
+}

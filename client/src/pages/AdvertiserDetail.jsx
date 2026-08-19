@@ -8,7 +8,7 @@ import {
 import api from '../api/client';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber, formatPercent } from '../utils/formatCurrency';
-import { buildPostbackUrl } from '../utils/postbackUrl';
+import { buildPostbackUrl, resolveAdvertiserDomain, toBaseUrl } from '../utils/postbackUrl';
 
 const statusColors = {
   active: 'bg-green-100 text-green-800',
@@ -105,6 +105,7 @@ export default function AdvertiserDetail() {
   const [notFound, setNotFound] = useState(false);
   const [settings, setSettings] = useState({});
   const [presets, setPresets] = useState(null);
+  const [domains, setDomains] = useState([]);
   const [showSecret, setShowSecret] = useState(false);
   const [copied, setCopied] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -112,15 +113,17 @@ export default function AdvertiserDetail() {
 
   const fetchData = async () => {
     try {
-      const [advRes, settingsRes, presetsRes] = await Promise.all([
+      const [advRes, settingsRes, presetsRes, domainsRes] = await Promise.all([
         api.get(`/advertisers/${id}`),
         api.get('/settings').catch(() => ({ data: { settings: {} } })),
         api.get('/network-presets').catch(() => ({ data: { presets: null } })),
+        api.get('/tracking-domains').catch(() => ({ data: { domains: [] } })),
       ]);
       setAdvertiser(advRes.data.advertiser);
       setOffers(advRes.data.offers || []);
       setStats(advRes.data.stats || null);
       setSettings(settingsRes.data.settings || {});
+      setDomains((domainsRes.data.domains || []).filter(d => d.status === 'verified'));
       if (presetsRes.data.presets) setPresets(presetsRes.data.presets);
     } catch (err) {
       console.error('Failed to fetch advertiser:', err);
@@ -251,8 +254,11 @@ export default function AdvertiserDetail() {
 
   // Build postback URL
   const network = advertiser.network || 'custom';
-  const trackingDomain = settings.trackingDomain || window.location.origin;
-  const baseUrl = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
+  // Resolve through the shared helper, not settings alone — this page used to
+  // ignore the advertiser's own domain entirely and show a different postback
+  // URL from the one on the Offers page.
+  const trackingDomain = resolveAdvertiserDomain(advertiser, settings, domains) || window.location.origin;
+  const baseUrl = toBaseUrl(trackingDomain);
   const preset = presets?.[network] || presets?.custom;
   const postbackUrl = buildPostbackUrl({
     trackingDomain: baseUrl,

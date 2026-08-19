@@ -115,12 +115,20 @@ exports.getOffer = async (req, res, next) => {
     // it. Worth knowing what that grants — the secret is the ONLY thing gating
     // /postback, so whoever holds it can forge conversions with arbitrary
     // revenue. If that ever needs narrowing, gate it here on isManager().
-    const advertiserFields = 'name postbackSecret network';
+    const advertiserFields = 'name postbackSecret network trackingDomain';
 
     const offer = await Offer.findOne({
       _id: req.params.id,
       status: { $ne: 'deleted' },
-    }).populate('advertiser', advertiserFields).populate('trackingDomain', 'domain status');
+    })
+      // Nested populate: the postback URL shown on this page belongs to the
+      // ADVERTISER, so it needs the advertiser's domain — not the offer's.
+      .populate({
+        path: 'advertiser',
+        select: advertiserFields,
+        populate: { path: 'trackingDomain', select: 'domain status' },
+      })
+      .populate('trackingDomain', 'domain status');
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
     if (!ownsDoc(offer, req.user)) return denyNotFound(res, 'Offer not found');
 

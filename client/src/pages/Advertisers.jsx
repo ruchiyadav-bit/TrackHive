@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Edit2, Trash2, Copy, ExternalLink, Search, AlertTriangle, Check, Info } from 'lucide-react';
 import api from '../api/client';
-import { buildPostbackUrl } from '../utils/postbackUrl';
+import { buildPostbackUrl, resolveAdvertiserDomain, toBaseUrl } from '../utils/postbackUrl';
 
 const statusColors = {
  active: 'bg-green-100 text-green-800',
@@ -27,9 +27,11 @@ export default function Advertisers() {
  const [copied, setCopied] = useState(null);
  const [trackingDomain, setTrackingDomain] = useState('');
  const [presets, setPresets] = useState(null);
+ const [settings, setSettings] = useState({});
+ const [verifiedDomains, setVerifiedDomains] = useState([]);
  const [form, setForm] = useState({
   name: '', company: '', website: '', status: 'active', network: 'custom',
-  clickIdParam: 'click_id', contactName: '', contactEmail: '', notes: '',
+  clickIdParam: 'click_id', trackingDomain: '', contactName: '', contactEmail: '', notes: '',
  });
 
  const fetchAdvertisers = async () => {
@@ -56,8 +58,11 @@ export default function Advertisers() {
     ]);
     const settings = settingsRes.data.settings || {};
     const domains = (domainsRes.data.domains || []).filter(d => d.status === 'verified');
-    const domain = settings.trackingDomain || (domains.length > 0 ? domains[0].domain : '');
-    setTrackingDomain(domain);
+    setSettings(settings);
+    setVerifiedDomains(domains);
+    // Account-level fallback, still used when an advertiser has no domain of
+    // its own and to decide whether ANY domain exists at all.
+    setTrackingDomain(settings.trackingDomain || domains[0]?.domain || '');
     if (presetsRes.data.presets) setPresets(presetsRes.data.presets);
    } catch (err) {
     console.error(err);
@@ -71,15 +76,17 @@ export default function Advertisers() {
  // Build postback URL using network presets. Delegates to the shared builder
  // so this list, the advertiser page and the offer page can never drift apart.
  const postbackUrlFor = (adv) => {
-  if (!trackingDomain || !presets) return null;
+  if (!presets) return null;
   const preset = presets[adv.network || 'custom'] || presets.custom;
   if (!preset) return null;
-  return buildPostbackUrl({ trackingDomain, preset, secret: adv.postbackSecret });
+  const domain = resolveAdvertiserDomain(adv, settings, verifiedDomains);
+  if (!domain) return null;
+  return buildPostbackUrl({ trackingDomain: toBaseUrl(domain), preset, secret: adv.postbackSecret });
  };
 
  const openAdd = () => {
   setEditing(null);
-  setForm({ name: '', company: '', website: '', status: 'active', network: 'custom', clickIdParam: 'click_id', contactName: '', contactEmail: '', notes: '' });
+  setForm({ name: '', company: '', website: '', status: 'active', network: 'custom', clickIdParam: 'click_id', trackingDomain: '', contactName: '', contactEmail: '', notes: '' });
   setShowModal(true);
  };
 
@@ -89,6 +96,7 @@ export default function Advertisers() {
    name: adv.name || '', company: adv.company || '', website: adv.website || '',
    status: adv.status || 'active', network: adv.network || 'custom',
    clickIdParam: adv.clickIdParam || 'click_id',
+   trackingDomain: (typeof adv.trackingDomain === 'object' ? adv.trackingDomain?._id : adv.trackingDomain) || '',
    contactName: adv.contactName || '', contactEmail: adv.contactEmail || '', notes: adv.notes || '',
   });
   setShowModal(true);
@@ -318,6 +326,31 @@ export default function Advertisers() {
        </div>
        <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
+         Tracking Domain <span className="font-normal text-gray-400">(postback URL is built on this)</span>
+        </label>
+        <select value={form.trackingDomain} onChange={(e) => setForm({ ...form, trackingDomain: e.target.value })}
+         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+         <option value="">
+          {settings.trackingDomain
+           ? `Account default (${settings.trackingDomain})`
+           : verifiedDomains[0]
+             ? `Account default (${verifiedDomains[0].domain})`
+             : 'No domain available'}
+         </option>
+         {verifiedDomains.map(d => (
+          <option key={d._id} value={d._id}>{d.domain}</option>
+         ))}
+        </select>
+        <p className="text-[11px] text-gray-400 mt-1 flex items-start gap-1">
+         <Info size={10} className="mt-0.5 shrink-0" />
+         <span>
+          Pick one and keep it. The postback URL is registered once on the network,
+          so changing this later means re-pasting it there.
+         </span>
+        </p>
+       </div>
+       <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
          Click ID Param <span className="font-normal text-gray-400">(in landing page URL)</span>
         </label>
         <input value={form.clickIdParam} onChange={(e) => setForm({ ...form, clickIdParam: e.target.value })}
@@ -352,8 +385,11 @@ export default function Advertisers() {
           {(() => {
            const preset = presets[form.network] || presets.custom;
            if (!preset) return '';
+           const picked = verifiedDomains.find(d => d._id === form.trackingDomain);
+           const domain = picked?.domain || settings.trackingDomain || verifiedDomains[0]?.domain || '';
+           if (!domain) return '';
            return buildPostbackUrl({
-            trackingDomain,
+            trackingDomain: toBaseUrl(domain),
             preset,
             secret: editing?.postbackSecret || '{auto-generated}',
            });

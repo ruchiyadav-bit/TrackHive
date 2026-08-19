@@ -17,7 +17,7 @@ exports.list = async (req, res, next) => {
         { company: { $regex: search, $options: 'i' } },
       ];
     }
-    const advertisers = await Advertiser.find(filter).sort('-createdAt');
+    const advertisers = await Advertiser.find(filter).sort('-createdAt').populate('trackingDomain', 'domain status');
     res.json({ advertisers });
   } catch (error) {
     next(error);
@@ -26,7 +26,7 @@ exports.list = async (req, res, next) => {
 
 exports.get = async (req, res, next) => {
   try {
-    const advertiser = await Advertiser.findById(req.params.id);
+    const advertiser = await Advertiser.findById(req.params.id).populate('trackingDomain', 'domain status');
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });
     if (!ownsDoc(advertiser, req.user)) return denyNotFound(res, 'Advertiser not found');
 
@@ -63,7 +63,7 @@ exports.get = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { name, company, website, status, network, clickIdParam, contactName, contactEmail, notes } = req.body;
+    const { name, company, website, status, network, clickIdParam, contactName, contactEmail, notes, trackingDomain } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
 
     const advertiser = new Advertiser({
@@ -72,6 +72,7 @@ exports.create = async (req, res, next) => {
       network: network || 'custom',
       clickIdParam: clickIdParam || 'click_id',
       contactName, contactEmail, notes,
+      trackingDomain: trackingDomain || undefined,
       postbackSecret: crypto.randomBytes(16).toString('hex'),
       createdBy: req.user._id,
     });
@@ -89,6 +90,8 @@ exports.update = async (req, res, next) => {
     const data = { ...req.body };
     delete data.createdBy;
     delete data.postbackSecret;
+    // '' on an ObjectId ref throws a CastError — treat "no selection" as unset.
+    if (data.trackingDomain === '' || data.trackingDomain === null) data.trackingDomain = undefined;
 
     const advertiser = await Advertiser.findOneAndUpdate(
       { _id: req.params.id, ...ownerFilter(req.user) },

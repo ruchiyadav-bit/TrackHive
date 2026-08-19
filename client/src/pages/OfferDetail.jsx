@@ -9,7 +9,7 @@ import api from '../api/client';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber, formatPercent } from '../utils/formatCurrency';
 import { countryName } from '../utils/countries';
-import { buildPostbackUrl } from '../utils/postbackUrl';
+import { buildPostbackUrl, resolveAdvertiserDomain, toBaseUrl } from '../utils/postbackUrl';
 
 const statusColors = {
  active: 'bg-green-100 text-green-800',
@@ -164,7 +164,12 @@ export default function OfferDetail() {
  const advSecret = typeof offer.advertiser === 'object' ? offer.advertiser?.postbackSecret : null;
  const advNetwork = typeof offer.advertiser === 'object' ? (offer.advertiser?.network || 'custom') : 'custom';
  const preset = presets?.[advNetwork] || presets?.custom;
- const postbackUrl = buildPostbackUrl({ trackingDomain: baseUrl, preset, secret: advSecret });
+ // The tracking link uses the OFFER's domain (above). The postback URL must use
+ // the ADVERTISER's — it is registered once per advertiser on the network, and
+ // showing the offer's domain here would hand out a URL that does not match it.
+ const advObj = typeof offer.advertiser === 'object' ? offer.advertiser : null;
+ const postbackBase = toBaseUrl(resolveAdvertiserDomain(advObj, settings, []) || trackingDomain);
+ const postbackUrl = buildPostbackUrl({ trackingDomain: postbackBase, preset, secret: advSecret });
 
  // Stats
  const cvr = offer.totalClicks > 0 ? (offer.totalConversions / offer.totalClicks) * 100 : 0;
