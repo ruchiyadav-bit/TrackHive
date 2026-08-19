@@ -432,6 +432,8 @@ async function checkCapsAndNotify(offer) {
         ...alert,
         offerId: offer._id,
         offerName: offer.name,
+        // The alert is about this offer, so it belongs to whoever owns it.
+        createdBy: offer.createdBy,
       });
       sendNotificationToTelegram(notification).catch(() => {});
     }

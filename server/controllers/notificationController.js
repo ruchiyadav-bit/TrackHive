@@ -1,5 +1,5 @@
 const Notification = require('../models/Notification');
-const { visibleOfferIds, offerScopeMatch } = require('../utils/scope');
+const { visibleOfferIds, offerScopeMatch, ownerFilter } = require('../utils/scope');
 
 /**
  * Which notifications this user may touch: their own offers' alerts, plus
@@ -9,12 +9,13 @@ const { visibleOfferIds, offerScopeMatch } = require('../utils/scope');
  */
 async function notificationScope(user) {
   const scopeIds = await visibleOfferIds(user);
-  if (scopeIds === null) return {};
   return {
     $or: [
+      // Owned directly (set from the offer's owner when the alert is raised).
+      ownerFilter(user),
+      // Or about an offer this user owns — covers rows written before
+      // createdBy existed on this model.
       offerScopeMatch(scopeIds),
-      { offerId: { $exists: false } },
-      { offerId: null },
     ],
   };
 }

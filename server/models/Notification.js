@@ -12,6 +12,10 @@ const notificationSchema = new mongoose.Schema(
     severity: { type: String, enum: ['info', 'warning', 'error', 'success'], default: 'info' },
     offerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Offer' },
     offerName: String,
+    // Who this alert belongs to — copied from the offer's owner at creation.
+    // Without it, an alert with no offerId (system / anomaly) was readable and
+    // DELETABLE by everyone, which is the one hole left in owner isolation.
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
     data: mongoose.Schema.Types.Mixed,
     readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     createdAt: { type: Date, default: Date.now, index: true },

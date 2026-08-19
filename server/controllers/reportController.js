@@ -143,7 +143,7 @@ function clickDateMatch(from, to, offerId, scopeIds, tz, field = 'clickedAt') {
     [field]: { $gte: zonedStartOfDayUtc(from, tz), $lte: zonedEndOfDayUtc(to, tz) },
   };
 
-  // `scopeIds` is what the caller is allowed to see at all (null = everything).
+  // `scopeIds` is what the caller is allowed to see at all (their own offers).
   // `offerId` is the optional UI filter on top of that. The scope must win: an
   // explicit offer_id in the query string must never widen visibility, or a
   // partner could read another partner's offer by guessing its id.
@@ -226,9 +226,9 @@ function sortRows(rows, sort) {
 
 exports.conversionReport = async (req, res, next) => {
   try {
-    // Everything below is limited to the offers this user may see.
-    // null = manager with full access; [] = a partner who owns nothing,
-    // which must match no rows rather than all rows.
+    // Everything below is limited to the offers this user created.
+    // Applies to every role: [] means they own nothing and must match no
+    // rows rather than all rows.
     const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-conversionAt', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
@@ -350,9 +350,9 @@ exports.conversionReport = async (req, res, next) => {
 
 exports.offerReport = async (req, res, next) => {
   try {
-    // Everything below is limited to the offers this user may see.
-    // null = manager with full access; [] = a partner who owns nothing,
-    // which must match no rows rather than all rows.
+    // Everything below is limited to the offers this user created.
+    // Applies to every role: [] means they own nothing and must match no
+    // rows rather than all rows.
     const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-revenue', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
@@ -501,9 +501,9 @@ exports.offerReport = async (req, res, next) => {
 
 exports.dailyReport = async (req, res, next) => {
   try {
-    // Everything below is limited to the offers this user may see.
-    // null = manager with full access; [] = a partner who owns nothing,
-    // which must match no rows rather than all rows.
+    // Everything below is limited to the offers this user created.
+    // Applies to every role: [] means they own nothing and must match no
+    // rows rather than all rows.
     const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-date', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
@@ -588,9 +588,9 @@ exports.dailyReport = async (req, res, next) => {
 
 exports.hourlyReport = async (req, res, next) => {
   try {
-    // Everything below is limited to the offers this user may see.
-    // null = manager with full access; [] = a partner who owns nothing,
-    // which must match no rows rather than all rows.
+    // Everything below is limited to the offers this user created.
+    // Applies to every role: [] means they own nothing and must match no
+    // rows rather than all rows.
     const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-hour', page = 1, limit = 100 } = req.query;
     // Explicit ?timezone= wins, else the account default (Settings.timezone)
@@ -699,9 +699,9 @@ exports.hourlyReport = async (req, res, next) => {
 
 exports.logReport = async (req, res, next) => {
   try {
-    // Everything below is limited to the offers this user may see.
-    // null = manager with full access; [] = a partner who owns nothing,
-    // which must match no rows rather than all rows.
+    // Everything below is limited to the offers this user created.
+    // Applies to every role: [] means they own nothing and must match no
+    // rows rather than all rows.
     const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, status = 'all', search, sort = '-clickedAt', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
@@ -843,9 +843,9 @@ exports.logReport = async (req, res, next) => {
 
 exports.exportCsv = async (req, res, next) => {
   try {
-    // Everything below is limited to the offers this user may see.
-    // null = manager with full access; [] = a partner who owns nothing,
-    // which must match no rows rather than all rows.
+    // Everything below is limited to the offers this user created.
+    // Applies to every role: [] means they own nothing and must match no
+    // rows rather than all rows.
     const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, type = 'daily' } = req.query;
     const tz = await resolveTimezone(req);

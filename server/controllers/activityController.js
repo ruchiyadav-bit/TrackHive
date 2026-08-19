@@ -1,19 +1,19 @@
 const ActivityLog = require('../models/ActivityLog');
-const { isManager } = require('../config/roles');
 
 exports.list = async (req, res, next) => {
   try {
     const { action, entityType, userId, from, to, search, page = 1, limit = 50 } = req.query;
     const filter = {};
 
-    // A partner sees only their own actions. The log carries userName, so an
-    // unscoped list would tell every partner exactly who else uses the account
-    // and what they are running.
-    if (!isManager(req.user)) filter.userId = req.user._id;
+    // Everyone — manager included — sees only their own actions. The log
+    // carries userName plus the entityName of the offer or advertiser touched,
+    // so an unscoped list is just another way to read a colleague's book.
+    filter.userId = req.user._id;
 
     if (action) filter.action = action;
     if (entityType) filter.entityType = entityType;
-    if (userId && isManager(req.user)) filter.userId = userId;
+    // `userId` from the query string is ignored: the scope above is the only
+    // thing that decides whose actions are returned.
     if (from || to) {
       filter.createdAt = {};
       if (from) filter.createdAt.$gte = new Date(from);

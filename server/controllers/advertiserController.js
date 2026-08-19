@@ -124,11 +124,6 @@ exports.remove = async (req, res, next) => {
       });
     }
 
-    // Someone else may still reference it. Refuse without revealing by whom.
-    const foreignLinks = await Offer.countDocuments({ advertiser: req.params.id });
-    if (foreignLinks > 0) {
-      return res.status(400).json({ error: 'Cannot delete — this advertiser is still in use' });
-    }
 
     const advertiser = await Advertiser.findOneAndDelete({ _id: req.params.id, ...ownerFilter(req.user) });
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });

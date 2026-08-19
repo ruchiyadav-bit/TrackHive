@@ -3,8 +3,17 @@
  *
  * TrackHive has exactly two roles:
  *
- *   manager  Full access, including User Management and Tracking Domains.
- *   partner  Everything else. Cannot see or touch users or tracking domains.
+ *   manager  An operator who ALSO administers the account.
+ *   partner  An operator.
+ *
+ * Both see exactly the same thing of their own data — their offers, their
+ * advertisers, their clicks and reports — and NOTHING of anyone else's. A
+ * manager does not get a window into their team's offers; see utils/scope.js.
+ *
+ * `manager` grants only administration:
+ *   - User Management (create / edit / deactivate accounts)
+ *   - Tracking Domains (add / verify / delete)
+ *   - Account settings and Telegram configuration
  *
  * Every account created through signup is a partner. Only a manager can
  * promote someone, and only from the User Management screen.
@@ -34,7 +43,7 @@ function normalizeRole(role) {
   return LEGACY_ROLE_MAP[role] || DEFAULT_ROLE;
 }
 
-/** True when the user may manage users and tracking domains. */
+/** True when the user may administer the account. Never a data permission. */
 function isManager(user) {
   return normalizeRole(user?.role) === MANAGER;
 }

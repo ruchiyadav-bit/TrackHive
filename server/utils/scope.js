@@ -1,71 +1,77 @@
 /**
  * Data isolation.
  *
- * A manager sees the whole account. A partner sees ONLY what they created —
- * their own offers, their own advertisers, and the clicks, conversions and
- * reports belonging to those offers. One partner must never be able to tell
- * what another partner is running, or even that they exist.
+ * EVERY user — manager included — sees only the offers, advertisers, groups,
+ * templates, clicks, conversions, reports and alerts they created themselves.
+ * A manager running the account alongside their team is still just another
+ * operator with their own book of business; being a manager is about
+ * ADMINISTRATION, not visibility.
+ *
+ * What `manager` actually grants (see config/roles.js — none of it is data):
+ *   - User Management: create, edit, deactivate accounts
+ *   - Tracking Domains: add, verify, delete
+ *   - Account settings and Telegram configuration
  *
  * Ownership is `createdBy`, which every relevant model already carries.
  *
  * Rules for anything added later:
  *
  *  1. A list endpoint applies `ownerFilter(req.user)` to its query.
- *  2. A single-document endpoint calls `assertOwned(doc, req.user)` after
- *     loading and BEFORE returning or mutating.
+ *  2. A single-document endpoint calls `ownsDoc(doc, req.user)` after loading
+ *     and BEFORE returning or mutating — and puts `ownerFilter` inside the
+ *     write query itself, not in a separate pre-check.
  *  3. Anything aggregating clicks scopes on `offerScopeMatch(await
  *     visibleOfferIds(req.user))`.
  *
- * Skipping any of these leaks another partner's data silently — the response
- * is a valid 200, just with rows that should not be there.
+ * Skipping any of these leaks another user's data silently — the response is a
+ * valid 200, just with rows that should not be there.
  */
-
-const { isManager } = require('../config/roles');
 
 /**
- * Mongo filter fragment limiting a query to documents the user owns.
- * Managers get `{}` (everything).
+ * Mongo filter fragment limiting a query to documents this user owns.
+ * There is no role exemption. If you find yourself wanting one, the feature
+ * belongs in config/roles.js as an administrative capability instead.
  */
 function ownerFilter(user) {
-  return isManager(user) ? {} : { createdBy: user._id };
+  return { createdBy: user._id };
 }
 
 /**
  * True when the user may see/modify this document.
- * A document with no `createdBy` (created before ownership existed) belongs to
- * managers only — it is never handed to a partner by default.
+ *
+ * A document with no `createdBy` predates ownership and belongs to nobody, so
+ * it is returned to nobody — better a missing row than a leaked one.
  */
 function ownsDoc(doc, user) {
   if (!doc) return false;
-  if (isManager(user)) return true;
   return String(doc.createdBy || '') === String(user._id);
 }
 
 /**
  * Uniform 404 for documents the user does not own.
  *
- * Deliberately 404 and not 403: a 403 confirms the id exists, which lets a
- * partner enumerate how many offers or advertisers other partners have.
+ * Deliberately 404 and not 403: a 403 confirms the id exists, which lets
+ * someone enumerate how many offers or advertisers their colleagues have.
  */
 function denyNotFound(res, label = 'Not found') {
   return res.status(404).json({ error: label });
 }
 
 /**
- * Offer ids this user is allowed to see.
- * Returns `null` when unrestricted (a manager with full offer access), so
- * callers can skip adding any filter at all.
+ * Offer ids this user is allowed to see. ALWAYS an array — a user who owns
+ * nothing gets `[]`, which must match no rows.
+ *
+ * (Callers still tolerate `null` for "unrestricted". Nothing produces that any
+ * more, and the guards are kept only so a future change cannot silently turn a
+ * missing scope into a full-table read.)
  */
 async function visibleOfferIds(user) {
   const Offer = require('../models/Offer');
 
-  const byOwner = !isManager(user);
-  const byList = user.offerAccess === 'specific';
-  if (!byOwner && !byList) return null;
-
-  const filter = { status: { $ne: 'deleted' } };
-  if (byOwner) filter.createdBy = user._id;
-  if (byList) filter._id = { $in: user.allowedOffers || [] };
+  const filter = { status: { $ne: 'deleted' }, ...ownerFilter(user) };
+  if (user.offerAccess === 'specific') {
+    filter._id = { $in: user.allowedOffers || [] };
+  }
 
   const docs = await Offer.find(filter).select('_id').lean();
   return docs.map(d => d._id);
@@ -75,7 +81,7 @@ async function visibleOfferIds(user) {
  * Turn the result of visibleOfferIds() into a match fragment for any
  * click/stat collection keyed by `offerId`.
  *
- * An empty array matters: a partner who has created nothing must match NOTHING,
+ * The empty array matters: someone who has created nothing must match NOTHING,
  * not everything. `{ $in: [] }` is what produces that.
  */
 function offerScopeMatch(ids, field = 'offerId') {
