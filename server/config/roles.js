@@ -40,13 +40,35 @@ function isManager(user) {
 }
 
 /**
- * Settings keys only a manager may write.
+ * Settings are ONE account-wide document, not per user. So the safe shape is an
+ * allow-list: a partner may write only these keys, and everything else — now or
+ * added later — is manager-only by default.
  *
- * The Tracking Domain is hidden from partners in the UI, so it must also be
- * refused at the API — otherwise the restriction is decoration and a partner
- * can repoint every tracking link in the account with one PUT.
+ * A deny-list was the original design and it was wrong. It listed only
+ * trackingDomain, which left a partner free to PUT `timezone` (re-buckets every
+ * other tenant's reports), `globalPostbackUrl`, `clickIdParam`, or the
+ * defaultIpCap / bot / VPN toggles that seed every new offer in the account.
  */
-const MANAGER_ONLY_SETTING_KEYS = ['trackingDomain'];
+const PARTNER_WRITABLE_SETTING_KEYS = [];
+
+/** True when this user may write this settings key. */
+function canWriteSetting(user, key) {
+  return isManager(user) || PARTNER_WRITABLE_SETTING_KEYS.includes(key);
+}
+
+/**
+ * Settings values a partner is allowed to READ. trackingDomain is included
+ * because tracking links cannot be rendered without it; globalPostbackUrl and
+ * the rest stay manager-only.
+ */
+const PARTNER_READABLE_SETTING_KEYS = [
+  'siteName',
+  'currency',
+  'timezone',
+  'trackingDomain',
+  'clickIdParam',
+  'subIdParams',
+];
 
 module.exports = {
   MANAGER,
@@ -56,5 +78,7 @@ module.exports = {
   LEGACY_ROLE_MAP,
   normalizeRole,
   isManager,
-  MANAGER_ONLY_SETTING_KEYS,
+  PARTNER_WRITABLE_SETTING_KEYS,
+  PARTNER_READABLE_SETTING_KEYS,
+  canWriteSetting,
 };

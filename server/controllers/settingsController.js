@@ -1,6 +1,6 @@
 const Setting = require('../models/Setting');
 const { clearTimezoneCache } = require('../utils/appTime');
-const { isManager, MANAGER_ONLY_SETTING_KEYS } = require('../config/roles');
+const { isManager, canWriteSetting, PARTNER_READABLE_SETTING_KEYS } = require('../config/roles');
 
 const DEFAULTS = {
   siteName: 'TrackHive',
@@ -27,15 +27,23 @@ exports.getAll = async (req, res, next) => {
     const settings = await Setting.find();
     const map = { ...DEFAULTS };
     settings.forEach((s) => { map[s.key] = s.value; });
+
+    if (!isManager(req.user)) {
+      const visible = {};
+      for (const key of PARTNER_READABLE_SETTING_KEYS) {
+        if (key in map) visible[key] = map[key];
+      }
+      return res.json({ settings: visible, readOnly: true });
+    }
+
     res.json({ settings: map });
   } catch (err) {
     next(err);
   }
 };
 
-/** Keys a partner may not write. Hiding them in the UI is not a control. */
-const refusedKeys = (user, keys) =>
-  isManager(user) ? [] : keys.filter(k => MANAGER_ONLY_SETTING_KEYS.includes(k));
+/** Keys this user may not write. Hiding them in the UI is not a control. */
+const refusedKeys = (user, keys) => keys.filter(k => !canWriteSetting(user, k));
 
 exports.update = async (req, res, next) => {
   try {

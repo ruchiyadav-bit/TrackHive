@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ChevronLeft, ChevronRight, ChevronDown, Save, Check, X, Plus, Trash2 } from 'lucide-react';
 import api from '../../api/client';
+import { isManager } from '../../utils/roles';
+import { useAuth } from '../../hooks/useAuth';
 import { COUNTRIES, countryName } from '../../utils/countries';
 
 const STEPS = [
@@ -421,7 +423,7 @@ function ClickIdHint({ url, advertiser, onApply }) {
   );
 }
 
-function StepTracking({ form, setField, trackingDomains, advertisers = [], errors = {} }) {
+function StepTracking({ form, setField, trackingDomains, advertisers = [], errors = {}, canManageDomains = true }) {
   const selectedAdvertiser = advertisers.find(a => a._id === form.advertiser);
  return (
  <div className="space-y-4">
@@ -436,7 +438,13 @@ function StepTracking({ form, setField, trackingDomains, advertisers = [], error
  <SectionHeader>Tracking Domain</SectionHeader>
  <Select label="Tracking Domain" value={form.trackingDomain} onChange={v => setField('trackingDomain', v)}
  options={trackingDomains.filter(d => d.status === 'verified').map(d => ({ value: d._id, label: d.domain }))}
- placeholder={trackingDomains.length === 0 ? 'Add tracking domain in Settings first' : 'Select domain...'} />
+ placeholder={
+  trackingDomains.length === 0
+   // Partners cannot add domains, so telling them to "add one in Settings"
+   // sends them to a screen they cannot open.
+   ? (canManageDomains ? 'Add tracking domain in Settings first' : 'No domain available — ask your manager to add one')
+   : 'Select domain...'
+ } />
 
  <SectionHeader>Click Tracking</SectionHeader>
  <Select label="Linking Type" required value={form.linkingType} onChange={v => setField('linkingType', v)}
@@ -687,6 +695,7 @@ export default function OfferWizard({ offerId }) {
  const [offerGroups, setOfferGroups] = useState([]);
  const [trackingDomains, setTrackingDomains] = useState([]);
  const navigate = useNavigate();
+ const { user } = useAuth();
 
  useEffect(() => {
  // Fetch lookup data
@@ -801,7 +810,7 @@ export default function OfferWizard({ offerId }) {
  {/* Step Content */}
  <div className="bg-white rounded-xl border border-gray-200 p-6 min-h-[400px]">
  {step === 0 && <StepGeneral form={form} setField={setField} advertisers={advertisers} offerGroups={offerGroups} errors={errors} />}
- {step === 1 && <StepTracking form={form} setField={setField} trackingDomains={trackingDomains} advertisers={advertisers} errors={errors} />}
+ {step === 1 && <StepTracking form={form} setField={setField} trackingDomains={trackingDomains} advertisers={advertisers} errors={errors} canManageDomains={isManager(user)} />}
  {step === 2 && <StepRevenue form={form} setField={setField} />}
  {step === 3 && <StepAttribution form={form} setField={setField} />}
  {step === 4 && <StepTargeting form={form} setField={setField} />}

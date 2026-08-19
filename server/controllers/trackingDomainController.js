@@ -1,11 +1,19 @@
 const dns = require('dns');
 const https = require('https');
 const TrackingDomain = require('../models/TrackingDomain');
+const { isManager } = require('../config/roles');
 
 exports.list = async (req, res, next) => {
   try {
-    const domains = await TrackingDomain.find().sort('-createdAt');
-    res.json({ domains });
+    // Partners get a read-only picker: just what they need to choose a domain.
+    // The diagnostic fields (resolved IP, CNAME, verification errors, who added
+    // it) are the manager's business and are not sent to partners at all.
+    const fields = isManager(req.user)
+      ? ''
+      : 'domain status sslActive';
+
+    const domains = await TrackingDomain.find().select(fields).sort('-createdAt');
+    res.json({ domains, readOnly: !isManager(req.user) });
   } catch (error) {
     next(error);
   }

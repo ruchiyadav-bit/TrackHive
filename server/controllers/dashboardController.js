@@ -1,4 +1,5 @@
 const Offer = require('../models/Offer');
+const { ownerFilter, visibleOfferIds, offerScopeMatch } = require('../utils/scope');
 const Click = require('../models/Click');
 const {
   resolveTimezone, zonedStartOfDayUtc, zonedEndOfDayUtc, todayInTz, daysAgoInTz,
@@ -25,7 +26,8 @@ exports.getSummary = async (req, res, next) => {
   try {
     const { from, to } = req.query;
     const tz = await resolveTimezone(req);
-    const offerFilter = { status: { $ne: 'deleted' } };
+    // Partners only ever see their own offers on the dashboard.
+    const offerFilter = { status: { $ne: 'deleted' }, ...ownerFilter(req.user) };
 
     // Offer access filtering
     if (req.user.offerAccess === 'specific') {
@@ -62,6 +64,7 @@ exports.getSummary = async (req, res, next) => {
 
 exports.getChart = async (req, res, next) => {
   try {
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, metric = 'clicks', groupBy = 'day' } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgoInTz(30, tz);
@@ -76,9 +79,10 @@ exports.getChart = async (req, res, next) => {
     const bucket = (field) => ({ $dateToString: { format: fmt, date: `$${field}`, timezone: tz } });
 
     const scope = {};
-    if (req.user.offerAccess === 'specific') {
-      scope.offerId = { $in: req.user.allowedOffers };
-    }
+    // visibleOfferIds() already intersects createdBy with allowedOffers.
+    // Re-applying allowedOffers here used to OVERWRITE that and hand back
+    // offers the partner did not create.
+    Object.assign(scope, offerScopeMatch(scopeIds));
 
     const clickMatch = { ...scope, ...dayWindow(dateFrom, dateTo, tz, 'clickedAt') };
     const convMatch = { ...scope, ...dayWindow(dateFrom, dateTo, tz, 'conversionAt'), converted: true };
@@ -150,15 +154,17 @@ exports.getChart = async (req, res, next) => {
 
 exports.getTopOffers = async (req, res, next) => {
   try {
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, sort = 'revenue', limit = 10 } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgoInTz(30, tz);
     const dateTo = to || todayInTz(tz);
 
     const scope = {};
-    if (req.user.offerAccess === 'specific') {
-      scope.offerId = { $in: req.user.allowedOffers };
-    }
+    // visibleOfferIds() already intersects createdBy with allowedOffers.
+    // Re-applying allowedOffers here used to OVERWRITE that and hand back
+    // offers the partner did not create.
+    Object.assign(scope, offerScopeMatch(scopeIds));
 
     const clickMatch = { ...scope, ...dayWindow(dateFrom, dateTo, tz, 'clickedAt') };
     const convMatch = { ...scope, ...dayWindow(dateFrom, dateTo, tz, 'conversionAt'), converted: true };
@@ -217,10 +223,12 @@ exports.getTopOffers = async (req, res, next) => {
 
 exports.getRecentClicks = async (req, res, next) => {
   try {
+    const scopeIds = await visibleOfferIds(req.user);
     const filter = {};
-    if (req.user.offerAccess === 'specific') {
-      filter.offerId = { $in: req.user.allowedOffers };
-    }
+    // visibleOfferIds() already intersects createdBy with allowedOffers.
+    // Re-applying allowedOffers here used to OVERWRITE that and hand back
+    // offers the partner did not create.
+    Object.assign(filter, offerScopeMatch(scopeIds));
 
     const clicks = await Click.find(filter)
       .sort({ clickedAt: -1 })
@@ -235,15 +243,17 @@ exports.getRecentClicks = async (req, res, next) => {
 
 exports.getGeoBreakdown = async (req, res, next) => {
   try {
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgoInTz(30, tz);
     const dateTo = to || todayInTz(tz);
 
     const match = dayWindow(dateFrom, dateTo, tz, 'clickedAt');
-    if (req.user.offerAccess === 'specific') {
-      match.offerId = { $in: req.user.allowedOffers };
-    }
+    // visibleOfferIds() already intersects createdBy with allowedOffers.
+    // Re-applying allowedOffers here used to OVERWRITE that and hand back
+    // offers the partner did not create.
+    Object.assign(match, offerScopeMatch(scopeIds));
 
     const agg = await Click.aggregate([
       { $match: match },
@@ -261,7 +271,10 @@ exports.getGeoBreakdown = async (req, res, next) => {
 // Helpers
 
 async function getDayStats(from, to, offerIds, tz) {
-  const scope = offerIds && offerIds.length ? { offerId: { $in: offerIds } } : {};
+  // offerScopeMatch, NOT a truthiness check: an empty array means "this user
+  // owns nothing" and must match no rows. The old ternary turned that into {},
+  // which matched the entire Click collection.
+  const scope = offerScopeMatch(offerIds);
 
   const [clickAgg, convAgg] = await Promise.all([
     Click.aggregate([

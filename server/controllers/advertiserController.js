@@ -1,11 +1,15 @@
 const Advertiser = require('../models/Advertiser');
 const Offer = require('../models/Offer');
 const crypto = require('crypto');
+const { ownerFilter, ownsDoc, denyNotFound } = require('../utils/scope');
 
 exports.list = async (req, res, next) => {
   try {
     const { status, search } = req.query;
-    const filter = {};
+    // Partners see only the advertisers they created. Leaking this list would
+    // also leak each advertiser's postbackSecret, which is enough to forge
+    // conversions against someone else's offers.
+    const filter = { ...ownerFilter(req.user) };
     if (status) filter.status = status;
     if (search) {
       filter.$or = [
@@ -24,9 +28,11 @@ exports.get = async (req, res, next) => {
   try {
     const advertiser = await Advertiser.findById(req.params.id);
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });
+    if (!ownsDoc(advertiser, req.user)) return denyNotFound(res, 'Advertiser not found');
 
-    // Fetch offers linked to this advertiser
-    const offers = await Offer.find({ advertiser: advertiser._id })
+    // Fetch offers linked to this advertiser — still owner-scoped, because a
+    // manager may have offers under an advertiser a partner can see.
+    const offers = await Offer.find({ advertiser: advertiser._id, ...ownerFilter(req.user) })
       .select('name status category totalClicks totalConversions totalRevenue totalPayout totalProfit currency')
       .sort('-createdAt')
       .lean();
@@ -78,9 +84,15 @@ exports.create = async (req, res, next) => {
 
 exports.update = async (req, res, next) => {
   try {
-    const advertiser = await Advertiser.findByIdAndUpdate(
-      req.params.id,
-      { $set: req.body },
+    // Ownership is not editable, and the secret is not settable through a plain
+    // update — it only changes via regenerateSecret.
+    const data = { ...req.body };
+    delete data.createdBy;
+    delete data.postbackSecret;
+
+    const advertiser = await Advertiser.findOneAndUpdate(
+      { _id: req.params.id, ...ownerFilter(req.user) },
+      { $set: data },
       { new: true, runValidators: true }
     );
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });
@@ -93,14 +105,29 @@ exports.update = async (req, res, next) => {
 exports.remove = async (req, res, next) => {
   try {
     // Block delete if offers are linked
-    const linkedOffers = await Offer.countDocuments({ advertiser: req.params.id });
+    const owned = await Advertiser.findOne({ _id: req.params.id, ...ownerFilter(req.user) }).select('_id');
+    if (!owned) return denyNotFound(res, 'Advertiser not found');
+
+    // Count only the caller's own offers. The raw count used to include other
+    // users' offers, so the error message disclosed how many offers someone
+    // else had attached to this advertiser.
+    const linkedOffers = await Offer.countDocuments({
+      advertiser: req.params.id,
+      ...ownerFilter(req.user),
+    });
     if (linkedOffers > 0) {
       return res.status(400).json({
         error: `Cannot delete — ${linkedOffers} offer${linkedOffers > 1 ? 's are' : ' is'} linked to this advertiser`,
       });
     }
 
-    const advertiser = await Advertiser.findByIdAndDelete(req.params.id);
+    // Someone else may still reference it. Refuse without revealing by whom.
+    const foreignLinks = await Offer.countDocuments({ advertiser: req.params.id });
+    if (foreignLinks > 0) {
+      return res.status(400).json({ error: 'Cannot delete — this advertiser is still in use' });
+    }
+
+    const advertiser = await Advertiser.findOneAndDelete({ _id: req.params.id, ...ownerFilter(req.user) });
     if (!advertiser) return res.status(404).json({ error: 'Advertiser not found' });
     res.json({ message: 'Advertiser deleted' });
   } catch (error) {
@@ -110,8 +137,8 @@ exports.remove = async (req, res, next) => {
 
 exports.regenerateSecret = async (req, res, next) => {
   try {
-    const advertiser = await Advertiser.findByIdAndUpdate(
-      req.params.id,
+    const advertiser = await Advertiser.findOneAndUpdate(
+      { _id: req.params.id, ...ownerFilter(req.user) },
       { postbackSecret: crypto.randomBytes(16).toString('hex') },
       { new: true }
     );

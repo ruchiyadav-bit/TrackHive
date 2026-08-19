@@ -4,12 +4,14 @@ const { auth } = require('../middleware/auth');
 const QRCode = require('qrcode');
 const Offer = require('../models/Offer');
 const Setting = require('../models/Setting');
+const { ownsDoc, denyNotFound } = require('../utils/scope');
 
 // GET /api/smart-links/:offerId/qr - Generate QR code
 router.get('/:offerId/qr', auth, async (req, res, next) => {
   try {
     const offer = await Offer.findById(req.params.offerId);
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
+    if (!ownsDoc(offer, req.user)) return denyNotFound(res, 'Offer not found');
     if (!offer.smartLinkEnabled || !offer.smartLinkSlug) {
       return res.status(400).json({ error: 'Smart link not enabled for this offer' });
     }
@@ -54,6 +56,7 @@ router.get('/:offerId/qr/dataurl', auth, async (req, res, next) => {
   try {
     const offer = await Offer.findById(req.params.offerId);
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
+    if (!ownsDoc(offer, req.user)) return denyNotFound(res, 'Offer not found');
     if (!offer.smartLinkEnabled || !offer.smartLinkSlug) {
       return res.status(400).json({ error: 'Smart link not enabled for this offer' });
     }

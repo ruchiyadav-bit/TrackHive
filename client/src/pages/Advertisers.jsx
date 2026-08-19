@@ -175,15 +175,16 @@ export default function Advertisers() {
     </div>
    ) : (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+     <div className="max-h-[70vh] overflow-y-auto overflow-x-auto">
      <table className="w-full">
-      <thead>
+      <thead className="sticky top-0 z-10">
        <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-        <th className="px-4 py-3">Name</th>
-        <th className="px-4 py-3">Network</th>
-        <th className="px-4 py-3">Status</th>
-        <th className="px-4 py-3">Contact</th>
+        <th className="px-4 py-3 whitespace-nowrap">Name</th>
+        <th className="px-4 py-3 whitespace-nowrap">Network</th>
+        <th className="px-4 py-3 whitespace-nowrap">Status</th>
+        <th className="px-4 py-3 whitespace-nowrap">Contact</th>
         <th className="px-4 py-3">Postback URL</th>
-        <th className="px-4 py-3">Actions</th>
+        <th className="px-4 py-3 whitespace-nowrap">Actions</th>
        </tr>
       </thead>
       <tbody className="divide-y divide-gray-100">
@@ -192,27 +193,32 @@ export default function Advertisers() {
         const url = postbackUrlFor(adv);
         return (
         <tr key={adv._id} className="hover:bg-gray-50">
-         <td className="px-4 py-3">
-          <Link to={`/advertisers/${adv._id}`} className="font-medium text-blue-600 text-sm hover:underline">{adv.name}</Link>
+         <td className="px-4 py-3 align-top">
+          <Link
+           to={`/advertisers/${adv._id}`}
+           title={adv.name}
+           className="block font-medium text-blue-600 text-sm hover:underline whitespace-nowrap truncate max-w-[200px]"
+          >{adv.name}</Link>
           {adv.website && (
-           <a href={adv.website} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 flex items-center gap-1 hover:underline hover:text-blue-600">
-            <ExternalLink size={10} /> {adv.website.replace(/^https?:\/\//, '')}
+           <a href={adv.website} target="_blank" rel="noopener noreferrer" title={adv.website}
+              className="text-xs text-gray-400 flex items-center gap-1 hover:underline hover:text-blue-600 whitespace-nowrap truncate max-w-[200px]">
+            <ExternalLink size={10} className="shrink-0" /> {adv.website.replace(/^https?:\/\//, '')}
            </a>
           )}
          </td>
-         <td className="px-4 py-3">
-          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${networkBadgeColors[network] || networkBadgeColors.custom}`}>
+         <td className="px-4 py-3 align-top">
+          <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium ${networkBadgeColors[network] || networkBadgeColors.custom}`}>
            {getNetworkLabel(network)}
           </span>
          </td>
-         <td className="px-4 py-3">
-          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusColors[adv.status]}`}>
+         <td className="px-4 py-3 align-top">
+          <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium ${statusColors[adv.status]}`}>
            {adv.status}
           </span>
          </td>
-         <td className="px-4 py-3 text-sm text-gray-600">
-          {adv.contactName && <div>{adv.contactName}</div>}
-          {adv.contactEmail && <div className="text-xs text-gray-400">{adv.contactEmail}</div>}
+         <td className="px-4 py-3 text-sm text-gray-600 align-top">
+          {adv.contactName && <div className="whitespace-nowrap">{adv.contactName}</div>}
+          {adv.contactEmail && <div className="text-xs text-gray-400 whitespace-nowrap">{adv.contactEmail}</div>}
           {!adv.contactName && !adv.contactEmail && '—'}
          </td>
          <td className="px-4 py-3">
@@ -255,6 +261,7 @@ export default function Advertisers() {
        })}
       </tbody>
      </table>
+     </div>
     </div>
    )}
 

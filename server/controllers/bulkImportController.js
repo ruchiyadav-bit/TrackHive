@@ -1,4 +1,5 @@
 const Offer = require('../models/Offer');
+const { ownerFilter } = require('../utils/scope');
 const DailyStat = require('../models/DailyStat');
 const { logActivity } = require('../utils/activityLogger');
 
@@ -122,7 +123,7 @@ exports.bulkImport = async (req, res, next) => {
 
     // Match offer names to IDs
     const offerNames = [...new Set(rows.map(r => r.offerName).filter(Boolean))];
-    const offers = await Offer.find({ name: { $in: offerNames }, status: { $ne: 'deleted' } }).select('name _id');
+    const offers = await Offer.find({ name: { $in: offerNames }, status: { $ne: 'deleted' }, ...ownerFilter(req.user) }).select('name _id');
     const offerMap = {};
     offers.forEach(o => { offerMap[o.name.toLowerCase()] = o; });
 
@@ -169,7 +170,7 @@ exports.bulkConfirm = async (req, res, next) => {
 
     // Match offers
     const offerNames = [...new Set(rows.map(r => r.offerName).filter(Boolean))];
-    const offers = await Offer.find({ name: { $in: offerNames }, status: { $ne: 'deleted' } }).select('name _id');
+    const offers = await Offer.find({ name: { $in: offerNames }, status: { $ne: 'deleted' }, ...ownerFilter(req.user) }).select('name _id');
     const offerMap = {};
     offers.forEach(o => { offerMap[o.name.toLowerCase()] = o; });
 

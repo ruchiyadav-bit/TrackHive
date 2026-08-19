@@ -1,9 +1,10 @@
 const OfferTemplate = require('../models/OfferTemplate');
+const { ownerFilter, ownsDoc, denyNotFound } = require('../utils/scope');
 const { logActivity } = require('../utils/activityLogger');
 
 exports.list = async (req, res, next) => {
   try {
-    const templates = await OfferTemplate.find().sort({ createdAt: -1 });
+    const templates = await OfferTemplate.find(ownerFilter(req.user)).sort({ createdAt: -1 });
     res.json({ templates });
   } catch (err) {
     next(err);
@@ -52,6 +53,7 @@ exports.create = async (req, res, next) => {
 exports.get = async (req, res, next) => {
   try {
     const template = await OfferTemplate.findById(req.params.id);
+    if (template && !ownsDoc(template, req.user)) return denyNotFound(res, 'Template not found');
     if (!template) return res.status(404).json({ error: 'Template not found' });
     res.json({ template });
   } catch (err) {
@@ -67,7 +69,7 @@ exports.update = async (req, res, next) => {
     if (description !== undefined) update.description = description;
     if (templateData) update.templateData = templateData;
 
-    const template = await OfferTemplate.findByIdAndUpdate(req.params.id, update, { new: true });
+    const template = await OfferTemplate.findOneAndUpdate({ _id: req.params.id, ...ownerFilter(req.user) }, update, { new: true });
     if (!template) return res.status(404).json({ error: 'Template not found' });
     res.json({ template });
   } catch (err) {
@@ -77,7 +79,7 @@ exports.update = async (req, res, next) => {
 
 exports.remove = async (req, res, next) => {
   try {
-    const template = await OfferTemplate.findByIdAndDelete(req.params.id);
+    const template = await OfferTemplate.findOneAndDelete({ _id: req.params.id, ...ownerFilter(req.user) });
     if (!template) return res.status(404).json({ error: 'Template not found' });
 
     await logActivity({

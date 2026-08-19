@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { handleClick, getClick, listClicks } = require('../controllers/clickController');
-const { auth } = require('../middleware/auth');
+const { handleClick } = require('../controllers/clickController');
 
 // GET /click/whoami — public diagnostic. Echoes exactly what the tracker sees
 // for THIS visitor (IP, resolved country, device, OS, browser) so geo/device
@@ -36,8 +35,9 @@ router.get('/whoami', (req, res) => {
 // GET /click?offer_id=xxx — public click redirect
 router.get('/', handleClick);
 
-// API routes (authenticated)
-router.get('/api/list', auth, listClicks);
-router.get('/api/:clickId', auth, getClick);
+// The authenticated click API lives in routes/clickApi.js, mounted AFTER the
+// app middleware. This router is deliberately mounted before mongoSanitize and
+// the rate limiter so the public redirect stays fast — which is exactly why no
+// authenticated, query-driven endpoint belongs in it.
 
 module.exports = router;

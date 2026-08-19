@@ -65,6 +65,12 @@ const loginLimiter = rateLimit({
 });
 app.use('/api/auth/login', loginLimiter);
 
+// Authenticated click API. Same /click prefix, but mounted here so it inherits
+// mongoSanitize and a rate limit — the public router above matches only
+// GET /click and /click/whoami, so these paths fall through to it.
+const clickApiRoutes = require('./routes/clickApi');
+app.use('/click', apiLimiter, clickApiRoutes);
+
 // API routes
 const authRoutes = require('./routes/auth');
 const offerRoutes = require('./routes/offers');

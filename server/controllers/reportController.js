@@ -5,6 +5,7 @@
 // DailyStat is still written (see utils/clickHelpers.js) and remains useful as a
 // fast rollup if these queries ever get heavy at higher volume.
 const Click = require('../models/Click');
+const { visibleOfferIds, offerScopeMatch } = require('../utils/scope');
 const Offer = require('../models/Offer');
 const {
   resolveTimezone, zonedStartOfDayUtc, zonedEndOfDayUtc,
@@ -137,14 +138,24 @@ function addRateFields(row) {
  * 'conversionAt' for conversion metrics (conversions belong to the day the
  * postback landed, not the day the click happened).
  */
-function clickDateMatch(from, to, offerId, user, tz, field = 'clickedAt') {
+function clickDateMatch(from, to, offerId, scopeIds, tz, field = 'clickedAt') {
   const match = {
     [field]: { $gte: zonedStartOfDayUtc(from, tz), $lte: zonedEndOfDayUtc(to, tz) },
   };
-  if (offerId) match.offerId = toObjectId(offerId);
-  if (user.offerAccess === 'specific') {
-    match.offerId = { $in: user.allowedOffers };
+
+  // `scopeIds` is what the caller is allowed to see at all (null = everything).
+  // `offerId` is the optional UI filter on top of that. The scope must win: an
+  // explicit offer_id in the query string must never widen visibility, or a
+  // partner could read another partner's offer by guessing its id.
+  Object.assign(match, offerScopeMatch(scopeIds));
+
+  if (offerId) {
+    const requested = toObjectId(offerId);
+    const allowed = scopeIds === null ||
+      scopeIds.some(id => String(id) === String(requested));
+    match.offerId = allowed ? requested : { $in: [] };
   }
+
   return match;
 }
 
@@ -215,6 +226,10 @@ function sortRows(rows, sort) {
 
 exports.conversionReport = async (req, res, next) => {
   try {
+    // Everything below is limited to the offers this user may see.
+    // null = manager with full access; [] = a partner who owns nothing,
+    // which must match no rows rather than all rows.
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-conversionAt', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgo(30, tz);
@@ -223,7 +238,7 @@ exports.conversionReport = async (req, res, next) => {
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
     // Conversions are windowed on conversionAt, not clickedAt
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
     match.converted = true;
 
     // Summary
@@ -241,7 +256,7 @@ exports.conversionReport = async (req, res, next) => {
     const rawSummary = summaryAgg[0] || { conversions: 0, revenue: 0, payout: 0 };
 
     // For summary we also need total clicks in the same date range (not just converted)
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
     const clickSummary = await Click.aggregate([
       { $match: clickMatch },
       {
@@ -335,6 +350,10 @@ exports.conversionReport = async (req, res, next) => {
 
 exports.offerReport = async (req, res, next) => {
   try {
+    // Everything below is limited to the offers this user may see.
+    // null = manager with full access; [] = a partner who owns nothing,
+    // which must match no rows rather than all rows.
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-revenue', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgo(30, tz);
@@ -343,8 +362,8 @@ exports.offerReport = async (req, res, next) => {
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
     // Clicks are windowed on clickedAt; conversions on conversionAt.
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'clickedAt');
-    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt');
+    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
     convMatch.converted = true;
 
     const [clicksByOffer, convByOffer] = await Promise.all([
@@ -482,6 +501,10 @@ exports.offerReport = async (req, res, next) => {
 
 exports.dailyReport = async (req, res, next) => {
   try {
+    // Everything below is limited to the offers this user may see.
+    // null = manager with full access; [] = a partner who owns nothing,
+    // which must match no rows rather than all rows.
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-date', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgo(30, tz);
@@ -489,8 +512,8 @@ exports.dailyReport = async (req, res, next) => {
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'clickedAt');
-    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt');
+    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
     convMatch.converted = true;
 
     const [clicksByDay, convByDay] = await Promise.all([
@@ -565,6 +588,10 @@ exports.dailyReport = async (req, res, next) => {
 
 exports.hourlyReport = async (req, res, next) => {
   try {
+    // Everything below is limited to the offers this user may see.
+    // null = manager with full access; [] = a partner who owns nothing,
+    // which must match no rows rather than all rows.
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, sort = '-hour', page = 1, limit = 100 } = req.query;
     // Explicit ?timezone= wins, else the account default (Settings.timezone)
     const tz = await resolveTimezone(req);
@@ -582,7 +609,7 @@ exports.hourlyReport = async (req, res, next) => {
       return res.status(400).json({ error: 'Hourly report supports a maximum of 7 days range' });
     }
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
 
     // Summary from same click data
     const summaryAgg = await Click.aggregate([
@@ -672,6 +699,10 @@ exports.hourlyReport = async (req, res, next) => {
 
 exports.logReport = async (req, res, next) => {
   try {
+    // Everything below is limited to the offers this user may see.
+    // null = manager with full access; [] = a partner who owns nothing,
+    // which must match no rows rather than all rows.
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, status = 'all', search, sort = '-clickedAt', page = 1, limit = 50 } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgo(7, tz);
@@ -679,7 +710,7 @@ exports.logReport = async (req, res, next) => {
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
 
     // Status filter
     switch (status) {
@@ -716,7 +747,7 @@ exports.logReport = async (req, res, next) => {
     }
 
     // Summary counts
-    const baseMatch = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
+    const baseMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
     const summaryAgg = await Click.aggregate([
       { $match: baseMatch },
       {
@@ -812,6 +843,10 @@ exports.logReport = async (req, res, next) => {
 
 exports.exportCsv = async (req, res, next) => {
   try {
+    // Everything below is limited to the offers this user may see.
+    // null = manager with full access; [] = a partner who owns nothing,
+    // which must match no rows rather than all rows.
+    const scopeIds = await visibleOfferIds(req.user);
     const { from, to, offer_id, type = 'daily' } = req.query;
     const tz = await resolveTimezone(req);
     const dateFrom = from || daysAgo(30, tz);
@@ -820,8 +855,8 @@ exports.exportCsv = async (req, res, next) => {
     // Helper: same click/conversion split the on-screen reports use, so a CSV
     // always matches what the user just looked at.
     const aggregateBy = async (groupExpr, convGroupExpr) => {
-      const cm = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'clickedAt');
-      const vm = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+      const cm = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt');
+      const vm = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
       vm.converted = true;
       const [ca, va] = await Promise.all([
         Click.aggregate([
@@ -848,7 +883,7 @@ exports.exportCsv = async (req, res, next) => {
 
     switch (type) {
       case 'conversion': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz, 'conversionAt');
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
         match.converted = true;
         const data = await Click.find(match).sort({ conversionAt: -1 }).select('clickId offerName conversionAt conversionEvent revenue payout country device source').lean();
         headers = 'Click ID,Offer,Conversion At,Event,Revenue,Payout,Profit,Country,Device,Source';
@@ -869,7 +904,7 @@ exports.exportCsv = async (req, res, next) => {
         break;
       }
       case 'hourly': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
         const data = await Click.aggregate([
           { $match: match },
           {
@@ -890,7 +925,7 @@ exports.exportCsv = async (req, res, next) => {
         break;
       }
       case 'log': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, req.user, tz);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
         const data = await Click.find(match).sort({ clickedAt: -1 }).limit(10000).select('clickId offerName clickedAt ip country device browser os source subId1 isDuplicate isBlocked isBot isVpn blockReason converted revenue payout').lean();
         headers = 'Click ID,Offer,Timestamp,IP,Country,Device,Browser,OS,Source,Sub1,Status,Revenue,Payout,Profit';
         rows = data.map(d => {

@@ -1,13 +1,19 @@
 const ActivityLog = require('../models/ActivityLog');
+const { isManager } = require('../config/roles');
 
 exports.list = async (req, res, next) => {
   try {
     const { action, entityType, userId, from, to, search, page = 1, limit = 50 } = req.query;
     const filter = {};
 
+    // A partner sees only their own actions. The log carries userName, so an
+    // unscoped list would tell every partner exactly who else uses the account
+    // and what they are running.
+    if (!isManager(req.user)) filter.userId = req.user._id;
+
     if (action) filter.action = action;
     if (entityType) filter.entityType = entityType;
-    if (userId) filter.userId = userId;
+    if (userId && isManager(req.user)) filter.userId = userId;
     if (from || to) {
       filter.createdAt = {};
       if (from) filter.createdAt.$gte = new Date(from);

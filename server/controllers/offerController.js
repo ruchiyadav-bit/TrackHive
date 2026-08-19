@@ -1,5 +1,35 @@
 const Offer = require('../models/Offer');
 const xss = require('xss');
+const { ownerFilter, ownsDoc, denyNotFound } = require('../utils/scope');
+const Advertiser = require('../models/Advertiser');
+const OfferGroup = require('../models/OfferGroup');
+const TrackingDomain = require('../models/TrackingDomain');
+
+/**
+ * Every ObjectId a client can put on an offer has to be checked, not just
+ * accepted. Without this a partner could point their own offer at ANOTHER
+ * partner's advertiser — the offer passes the ownership check, and reading it
+ * returns that advertiser's postbackSecret, which is the only thing gating
+ * /postback. That is a forged-conversion path, not just a data leak.
+ *
+ * trackingDomain is the exception: domains are created by the manager and are
+ * meant to be selectable by everyone, so it only has to exist.
+ */
+async function assertRefsOwned(data, user) {
+  if (data.advertiser) {
+    const ok = await Advertiser.exists({ _id: data.advertiser, ...ownerFilter(user) });
+    if (!ok) return 'Advertiser not found';
+  }
+  if (data.offerGroup) {
+    const ok = await OfferGroup.exists({ _id: data.offerGroup, ...ownerFilter(user) });
+    if (!ok) return 'Offer group not found';
+  }
+  if (data.trackingDomain) {
+    const ok = await TrackingDomain.exists({ _id: data.trackingDomain });
+    if (!ok) return 'Tracking domain not found';
+  }
+  return null;
+}
 
 const sanitizeOffer = (data) => {
   if (data.name) data.name = xss(data.name);
@@ -19,7 +49,8 @@ exports.listOffers = async (req, res, next) => {
       sort = '-createdAt', page = 1, limit = 50,
     } = req.query;
 
-    const filter = { status: { $ne: 'deleted' } };
+    // Partners only ever list their own offers.
+    const filter = { status: { $ne: 'deleted' }, ...ownerFilter(req.user) };
     if (status) filter.status = status;
     if (category) filter.category = category;
 
@@ -60,6 +91,10 @@ exports.createOffer = async (req, res, next) => {
   try {
     const data = sanitizeOffer(req.body);
     if (!data.name?.trim()) return res.status(400).json({ error: 'Name is required' });
+
+    const refError = await assertRefsOwned(data, req.user);
+    if (refError) return res.status(400).json({ error: refError });
+
     data.createdBy = req.user._id;
 
     if (data.expirationDate) data.expirationDate = new Date(data.expirationDate);
@@ -87,6 +122,7 @@ exports.getOffer = async (req, res, next) => {
       status: { $ne: 'deleted' },
     }).populate('advertiser', advertiserFields).populate('trackingDomain', 'domain status');
     if (!offer) return res.status(404).json({ error: 'Offer not found' });
+    if (!ownsDoc(offer, req.user)) return denyNotFound(res, 'Offer not found');
 
     if (req.user.offerAccess === 'specific' &&
         !req.user.allowedOffers.some(id => id.toString() === offer._id.toString())) {
@@ -103,9 +139,15 @@ exports.updateOffer = async (req, res, next) => {
   try {
     const data = sanitizeOffer(req.body);
     if (data.expirationDate) data.expirationDate = new Date(data.expirationDate);
+    // Ownership is not editable — otherwise a partner could hand their offer to
+    // someone else, or claim one.
+    delete data.createdBy;
+
+    const refError = await assertRefsOwned(data, req.user);
+    if (refError) return res.status(400).json({ error: refError });
 
     const offer = await Offer.findOneAndUpdate(
-      { _id: req.params.id, status: { $ne: 'deleted' } },
+      { _id: req.params.id, status: { $ne: 'deleted' }, ...ownerFilter(req.user) },
       { $set: data },
       { new: true, runValidators: true }
     );
@@ -120,7 +162,7 @@ exports.updateOffer = async (req, res, next) => {
 exports.deleteOffer = async (req, res, next) => {
   try {
     const offer = await Offer.findOneAndUpdate(
-      { _id: req.params.id, status: { $ne: 'deleted' } },
+      { _id: req.params.id, status: { $ne: 'deleted' }, ...ownerFilter(req.user) },
       { status: 'deleted' },
       { new: true }
     );
@@ -135,6 +177,7 @@ exports.duplicateOffer = async (req, res, next) => {
   try {
     const source = await Offer.findById(req.params.id);
     if (!source) return res.status(404).json({ error: 'Offer not found' });
+    if (!ownsDoc(source, req.user)) return denyNotFound(res, 'Offer not found');
 
     const dup = source.toObject();
     delete dup._id;
@@ -167,7 +210,10 @@ exports.autocomplete = async (req, res, next) => {
     if (!allowed.includes(field)) {
       return res.status(400).json({ error: `Cannot autocomplete field: ${field}` });
     }
-    const values = await Offer.distinct(field, { status: { $ne: 'deleted' } });
+    const values = await Offer.distinct(field, {
+      status: { $ne: 'deleted' },
+      ...ownerFilter(req.user),
+    });
     const flat = values.flat().filter(Boolean);
     res.json({ values: [...new Set(flat)] });
   } catch (error) {

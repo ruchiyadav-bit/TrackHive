@@ -8,11 +8,14 @@ import { useToast } from '../components/ui/Toast';
 // managerOnly tabs are removed for partners. The Tracking tab holds the
 // tracking domain, which decides where every click in the account is served
 // from; Users lists every colleague's email.
+// Partners get General (their own preferences) and Security (their own
+// password) — nothing else. Tracking holds the tracking domain, Notifications
+// and Telegram are account-wide alert config, Users lists every colleague.
 const TABS = [
  { key: 'general', label: 'General', icon: SettingsIcon },
  { key: 'tracking', label: 'Tracking', icon: Link2, managerOnly: true },
- { key: 'notifications', label: 'Notifications', icon: Bell },
- { key: 'telegram', label: 'Telegram', icon: MessageSquare },
+ { key: 'notifications', label: 'Notifications', icon: Bell, managerOnly: true },
+ { key: 'telegram', label: 'Telegram', icon: MessageSquare, managerOnly: true },
  { key: 'users', label: 'Users', icon: Users, managerOnly: true },
  { key: 'security', label: 'Security', icon: Shield },
 ];
@@ -62,7 +65,7 @@ export default function Settings() {
  if (tab === 'users' && isManager(user)) {
  api.get('/users').then(r => setUsers(r.data.users || [])).catch(() => {});
  }
- if (tab === 'telegram') {
+ if (tab === 'telegram' && isManager(user)) {
  setTgLoading(true);
  api.get('/telegram').then(r => {
  setTgSettings(r.data.settings || {});

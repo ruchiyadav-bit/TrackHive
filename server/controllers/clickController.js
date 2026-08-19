@@ -7,6 +7,8 @@ const {
 } = require('../utils/clickHelpers');
 const { applyFilters } = require('../utils/trafficFilter');
 const { sendBlockedPage } = require('../utils/blockedPage');
+const { visibleOfferIds, offerScopeMatch, denyNotFound } = require('../utils/scope');
+const mongoose = require('mongoose');
 
 /**
  * Handle direct click tracking: GET /click?offer_id=xxx&sub1=...
@@ -170,6 +172,15 @@ exports.getClick = async (req, res, next) => {
   try {
     const click = await Click.findOne({ clickId: req.params.clickId });
     if (!click) return res.status(404).json({ error: 'Click not found' });
+
+    // A clickId is a bare string with no tenant in it, so ownership has to be
+    // resolved through the parent offer. 404 (not 403) so the endpoint cannot
+    // be used to confirm that someone else's clickId exists.
+    const scopeIds = await visibleOfferIds(req.user);
+    if (scopeIds !== null && !scopeIds.some(id => String(id) === String(click.offerId))) {
+      return denyNotFound(res, 'Click not found');
+    }
+
     res.json({ click });
   } catch (err) {
     next(err);
@@ -182,9 +193,23 @@ exports.getClick = async (req, res, next) => {
 exports.listClicks = async (req, res, next) => {
   try {
     const { offer_id, from, to, page = 1, limit = 100 } = req.query;
-    const filter = {};
 
-    if (offer_id) filter.offerId = offer_id;
+    // Scope first, then apply the optional offer_id filter INSIDE that scope.
+    // This router is mounted before mongoSanitize, so offer_id is also cast to
+    // an ObjectId — otherwise ?offer_id[$ne]=null arrives as a query operator.
+    const scopeIds = await visibleOfferIds(req.user);
+    const filter = { ...offerScopeMatch(scopeIds) };
+
+    if (offer_id) {
+      const requested = mongoose.Types.ObjectId.isValid(String(offer_id))
+        ? new mongoose.Types.ObjectId(String(offer_id))
+        : null;
+      const allowed = requested && (
+        scopeIds === null || scopeIds.some(id => String(id) === String(requested))
+      );
+      filter.offerId = allowed ? requested : { $in: [] };
+    }
+
     if (from || to) {
       filter.clickedAt = {};
       if (from) filter.clickedAt.$gte = new Date(from);
