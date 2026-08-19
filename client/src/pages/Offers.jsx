@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
  Plus, Search, ChevronLeft, ChevronRight, MoreVertical,
- Pencil, Copy, Trash2, ExternalLink, Link2, Eye,
+ Pencil, Copy, Trash2, ExternalLink, Link2, Eye, RefreshCw,
 } from 'lucide-react';
 import api from '../api/client';
 import { formatDate } from '../utils/formatDate';
@@ -118,6 +118,7 @@ function DeviceChips({ devices = [] }) {
 export default function Offers() {
  const [offers, setOffers] = useState([]);
  const [loading, setLoading] = useState(true);
+ const [refreshing, setRefreshing] = useState(false);
  const [search, setSearch] = useState('');
  const [statusFilter, setStatusFilter] = useState('');
  const [categoryFilter, setCategoryFilter] = useState('');
@@ -177,12 +178,23 @@ export default function Offers() {
  <p className="text-xs text-gray-500 mb-0.5">Offers / Manage</p>
  <h1 className="text-2xl font-bold text-gray-900">Manage Offers</h1>
  </div>
+ <div className="flex items-center gap-2">
+ {/* Reload just this list — no full page refresh. */}
+ <button
+ onClick={async () => { setRefreshing(true); try { await fetchOffers(); } finally { setRefreshing(false); } }}
+ disabled={refreshing}
+ title="Refresh list"
+ className="flex items-center justify-center w-9 h-9 bg-white border-2 border-gray-300 rounded-lg text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+ >
+ <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
+ </button>
  <Link
  to="/offers/new"
  className="flex items-center gap-2 px-4 py-2 border-2 border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
  >
  <Plus size={16} /> Offer
  </Link>
+ </div>
  </div>
 
  {/* Filters Bar */}

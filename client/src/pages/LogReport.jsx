@@ -3,6 +3,7 @@ import ReportShell, { StatusBadge, fmtCurrency, daysAgo, todayStr } from '../com
 
 const COLUMNS = [
   { key: 'clickedAt', label: 'Timestamp', align: 'left', sortable: true },
+  { key: 'clickId', label: 'Click ID', align: 'left', sortable: false },
   { key: 'offerName', label: 'Offer', align: 'left', sortable: true },
   { key: 'status', label: 'Status', align: 'left', sortable: false },
   { key: 'blockReason', label: 'Block Reason', align: 'left', sortable: false },
@@ -42,7 +43,18 @@ function renderCell(row, key) {
     case 'ip':
       return <code className="text-xs bg-gray-100 px-1 py-0.5 rounded text-gray-700">{row.ip}</code>;
     case 'clickId':
-      return <code className="text-xs text-gray-500 truncate max-w-[100px] inline-block">{row.clickId}</code>;
+      if (!row.clickId) return <span className="text-gray-300 text-xs">—</span>;
+      // Click-to-copy: this value gets pasted into a network's postback test
+      // form, and selecting a truncated 32-char id by hand is miserable.
+      return (
+        <button
+          onClick={() => navigator.clipboard?.writeText(row.clickId)}
+          title={`${row.clickId} — click to copy`}
+          className="text-xs text-gray-500 font-mono truncate max-w-[110px] inline-block hover:text-blue-600 cursor-pointer text-left"
+        >
+          {row.clickId.slice(0, 10)}…
+        </button>
+      );
     case 'revenue':
       return <span className="text-blue-600 text-xs">{fmtCurrency(row.revenue)}</span>;
     case 'payout':

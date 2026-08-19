@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   ChevronDown, ChevronRight, ChevronLeft, Download, Play,
-  Search, SlidersHorizontal, BarChart3, X,
+  Search, SlidersHorizontal, BarChart3, X, RefreshCw,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -44,6 +44,25 @@ export function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toISOString().split('T')[0];
+}
+
+/**
+ * Quick date ranges. `custom` keeps whatever is already in the From/To boxes
+ * and is the only option that reveals them — the calendar is there when it is
+ * needed and out of the way when it is not.
+ */
+const DATE_RANGES = [
+  { key: 'today',     label: 'Today',       range: () => [todayStr(), todayStr()] },
+  { key: 'yesterday', label: 'Yesterday',   range: () => [daysAgo(1), daysAgo(1)] },
+  { key: 'last2',     label: 'Last 2 days', range: () => [daysAgo(1), todayStr()] },
+  { key: 'last7',     label: 'Last 7 days', range: () => [daysAgo(6), todayStr()] },
+  { key: 'custom',    label: 'Custom',      range: null },
+];
+
+/** Which preset (if any) the current from/to pair corresponds to. */
+function matchRange(from, to) {
+  const hit = DATE_RANGES.find(r => r.range && r.range().join() === [from, to].join());
+  return hit ? hit.key : 'custom';
 }
 
 // ─── Summary Card ───────────────────────────────────────────────────────────
@@ -230,6 +249,7 @@ export default function ReportShell({
   const [searchText, setSearchText] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(autoRefreshMs > 0);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [rangeKey, setRangeKey] = useState(() => matchRange(daysAgo(defaultDays), todayStr()));
 
   // Load offers on first render
   if (!offersLoaded) {
@@ -270,8 +290,38 @@ export default function ReportShell({
   const handleRun = () => fetchReport(1);
   const handlePageChange = (newPage) => fetchReport(newPage);
 
+  // Picking a range applies it straight away — making the user press Run Report
+  // after clicking "Yesterday" is a pointless second step.
+  const applyRange = (key) => {
+    setRangeKey(key);
+    const preset = DATE_RANGES.find(r => r.key === key);
+    if (!preset?.range) return;
+    const [f, t] = preset.range();
+    setFrom(f);
+    setTo(t);
+    pendingRunRef.current = true;
+  };
+
+  // Refresh in place: same filters, same page, no full page reload. Also
+  // reloads the Offer dropdown so a newly created offer appears without one.
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      api.get('/offers', { params: { limit: 500 } })
+        .then(r => setOffers(r.data.offers || []))
+        .catch(() => {});
+      await fetchReport(page, { silent: true });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   // Keep the newest fetchReport/page in refs so the polling interval below
   // doesn't need them as dependencies (which would restart it constantly).
+  // applyRange sets from/to and flags a run; the effect below fires once the
+  // new dates are actually in state.
+  const pendingRunRef = useRef(false);
   const fetchRef = useRef(fetchReport);
   const pageRef = useRef(page);
   useEffect(() => { fetchRef.current = fetchReport; }, [fetchReport]);
@@ -285,6 +335,13 @@ export default function ReportShell({
     didAutoRun.current = true;
     fetchRef.current(1);
   }, []);
+
+  // Apply a range preset once its dates have landed in state.
+  useEffect(() => {
+    if (!pendingRunRef.current) return;
+    pendingRunRef.current = false;
+    fetchRef.current(1);
+  }, [from, to]);
 
   // Background polling — silent, keeps the current page, pauses when the tab
   // is hidden so a background tab isn't hammering the API.
@@ -361,6 +418,14 @@ export default function ReportShell({
                 Updated {lastUpdated.toLocaleTimeString()}
               </span>
             )}
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing || loading}
+              title="Refresh data"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+            </button>
             {hasRun && (
               <button
                 onClick={handleExport}
@@ -375,22 +440,39 @@ export default function ReportShell({
 
       {/* Filter Bar */}
       <div className="bg-white rounded-lg border border-gray-200 p-3 mb-4">
+        {/* Quick ranges */}
+        <div className="flex flex-wrap items-center gap-1 mb-3">
+          {DATE_RANGES.map(r => (
+            <button
+              key={r.key}
+              onClick={() => applyRange(r.key)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                rangeKey === r.key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex flex-wrap items-end gap-3">
-          <div>
+          <div className={rangeKey === 'custom' ? '' : 'hidden'}>
             <label className="block text-[10px] uppercase tracking-wider text-gray-400 font-medium mb-1">From</label>
             <input
               type="date"
               value={from}
-              onChange={e => setFrom(e.target.value)}
+              onChange={e => { setFrom(e.target.value); setRangeKey(matchRange(e.target.value, to)); }}
               className="px-2.5 py-1.5 border border-gray-300 rounded-md text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white text-gray-900"
             />
           </div>
-          <div>
+          <div className={rangeKey === 'custom' ? '' : 'hidden'}>
             <label className="block text-[10px] uppercase tracking-wider text-gray-400 font-medium mb-1">To</label>
             <input
               type="date"
               value={to}
-              onChange={e => setTo(e.target.value)}
+              onChange={e => { setTo(e.target.value); setRangeKey(matchRange(from, e.target.value)); }}
               className="px-2.5 py-1.5 border border-gray-300 rounded-md text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white text-gray-900"
             />
           </div>
@@ -407,6 +489,12 @@ export default function ReportShell({
               ))}
             </select>
           </div>
+
+          {rangeKey !== 'custom' && (
+            <div className="text-[11px] text-gray-400 pb-1.5">
+              {from === to ? from : `${from} → ${to}`}
+            </div>
+          )}
 
           {/* Extra filters injected by report page */}
           {extraFilters}

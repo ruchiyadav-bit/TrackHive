@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Edit2, Trash2, Copy, ExternalLink, Search, AlertTriangle, Check, Info } from 'lucide-react';
+import { Plus, Edit2, Trash2, Copy, ExternalLink, Search, AlertTriangle, Check, Info, RefreshCw } from 'lucide-react';
 import api from '../api/client';
 import { buildPostbackUrl, resolveAdvertiserDomain, toBaseUrl } from '../utils/postbackUrl';
 
@@ -29,6 +29,7 @@ export default function Advertisers() {
  const [presets, setPresets] = useState(null);
  const [settings, setSettings] = useState({});
  const [verifiedDomains, setVerifiedDomains] = useState([]);
+ const [refreshing, setRefreshing] = useState(false);
  const [form, setForm] = useState({
   name: '', company: '', website: '', status: 'active', network: 'custom',
   clickIdParam: 'click_id', trackingDomain: '', contactName: '', contactEmail: '', notes: '',
@@ -160,9 +161,20 @@ export default function Advertisers() {
   <div className="space-y-6">
    <div className="flex items-center justify-between">
     <h1 className="text-2xl font-bold text-gray-900">Advertisers</h1>
-    <button onClick={openAdd} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-     <Plus size={16} /> Add Advertiser
-    </button>
+    <div className="flex items-center gap-2">
+     {/* Reload just this list — no full page refresh. */}
+     <button
+      onClick={async () => { setRefreshing(true); try { await fetchAdvertisers(); } finally { setRefreshing(false); } }}
+      disabled={refreshing}
+      title="Refresh list"
+      className="flex items-center justify-center w-9 h-9 bg-white border border-gray-300 rounded-lg text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+     >
+      <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
+     </button>
+     <button onClick={openAdd} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+      <Plus size={16} /> Add Advertiser
+     </button>
+    </div>
    </div>
 
    <div className="relative max-w-sm">
