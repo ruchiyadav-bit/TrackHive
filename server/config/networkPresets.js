@@ -171,6 +171,32 @@ module.exports = {
     instruction: 'Paste in: app.katalys.com → Postbacks → Add Postback → Webhook Notification. Set "When to Send" to create + update + delete so reversals reach TrackHive.',
   },
 
+  smartadv: {
+    label: 'SmartAdv',
+    // SmartAdv runs on Everflow. Their own publisher FAQ answers "How do I set
+    // a postback?" by linking to Everflow's partner postback docs, and Everflow
+    // publishes SmartAdv as one of its network case studies. The tokens below
+    // are therefore Everflow's partner-side macros, not SmartAdv-specific ones.
+    clickIdParam: 'sub1',
+    macros: {
+      click_id: '{sub1}',
+      // Everflow's partner portal exposes {payout} — what the network pays US,
+      // which is our revenue. {sale_amount} also exists but only when the
+      // advertiser has enabled sale-amount visibility, so it is not relied on.
+      revenue:  '{payout}',
+      payout:   '0',
+      event:    '{event_id}',
+      txn_id:   '{transaction_id}',
+    },
+    // Everflow publishes NO conversion-status token for partner postbacks, so a
+    // reversal on SmartAdv's side never reaches us and revenue stays booked
+    // until it is reconciled by hand. If the account manager can add a status
+    // parameter, put it in extraParams and add a lifecycle block here.
+    verified: false,
+    docsUrl: 'https://helpdesk.everflow.io/customer/your-guide-to-parameters-macros',
+    instruction: 'Paste in: portal.smartadv.com -> Postbacks -> add a global or per-offer postback. Send the click id out as ?sub1={click_id} on the offer landing page URL so it comes back in {sub1}.',
+  },
+
   custom: {
     label: 'Custom / Other',
     clickIdParam: 'click_id',

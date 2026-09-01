@@ -167,13 +167,54 @@ Last verified: 2026-08-17
 
 ## Core Features
 
-### 1. Authentication & User Management
+### 1. Authentication, Roles & Data Isolation
 
 - **JWT-based auth** — login returns a token, stored in localStorage, sent as `Bearer` header on every API call
-- **Self-registration** — anyone can sign up at `/signup`, gets `viewer` role by default
-- **Role-based access** — 4 roles: `super_admin`, `admin`, `manager`, `viewer`
-- **Super Admin seeding** — on first run, creates a Super Admin using `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env`
-- **Offer-level access control** — users can be restricted to specific offers (`offerAccess: 'specific'`)
+- **Self-registration** — anyone can sign up at `/signup`; the role is pinned server-side and the form has no role field
+- **TWO roles only** — `manager` and `partner`, defined in `server/config/roles.js`
+- **Manager seeding** — on first run, creates a manager using `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env`
+- **Offer-level access control** — users can additionally be restricted to specific offers (`offerAccess: 'specific'`), which *narrows* ownership, never widens it
+
+**The role model (changed 2026-08-19 — was 4 roles: super_admin / admin / manager / viewer):**
+
+`manager` is NOT a data permission. Both roles see only what they created; a manager
+additionally *administers* the account.
+
+| | manager | partner |
+|---|---|---|
+| Own offers, advertisers, clicks, reports | ✅ | ✅ |
+| **Anyone else's** | ❌ | ❌ |
+| User Management (`/api/users`) | ✅ | ❌ |
+| Tracking Domains — add / verify / delete | ✅ | ❌ |
+| Tracking Domains — read (picker) | ✅ | ✅ (trimmed fields) |
+| Settings writes, Telegram | ✅ | ❌ |
+| Settings tabs visible | all | General + Security |
+
+**Data isolation — `server/utils/scope.js`**
+
+Ownership is `createdBy`, present on Offer, Advertiser, OfferGroup, OfferTemplate,
+TrackingDomain and (since 2026-08-19) Notification.
+
+- `ownerFilter(user)` → `{ createdBy: user._id }` for **everyone**, no role exemption
+- `ownsDoc(doc, user)` → strict compare; a doc with no `createdBy` belongs to nobody
+- `visibleOfferIds(user)` → always an array; `[]` means "owns nothing" and must match **no** rows
+- `offerScopeMatch(ids)` → `{ offerId: { $in: ids } }`; the empty-array case is the whole point
+- `denyNotFound(res)` → 404, never 403, so ids cannot be enumerated
+
+Rules when adding an endpoint:
+1. List queries spread `ownerFilter(req.user)`.
+2. Single-doc endpoints call `ownsDoc()` **and** put `ownerFilter` inside the write query itself.
+3. Anything aggregating clicks scopes on `offerScopeMatch(await visibleOfferIds(req.user))`.
+4. Any client-supplied ObjectId reference (advertiser, offerGroup) is validated as owned before save.
+
+Exceptions, deliberate: tracking-domain list (shared resource), `/api/network-presets`
+(static config), and the unauthenticated tracking endpoints `/click`, `/postback`, `/go/:slug`.
+
+**Role migration** — `server/utils/migrateRoles.js` runs on every boot, BEFORE seeding and
+before any login, mapping `super_admin|admin|manager → manager` and `viewer → partner`.
+It must run first because login writes `lastLogin` via `save()`, which revalidates the
+document — a stale role would fail the new enum and lock the owner out. It also promotes
+the oldest account if no manager exists, since User Management is itself manager-only.
 
 **How auth flows:**
 ```
@@ -955,8 +996,18 @@ Last verified: 2026-08-17
 - **Password hashing** — bcrypt with 12 salt rounds
 - **JWT expiry** — 24 hours default, 30 days with "remember me"
 - **Input validation** — Zod schemas for login/signup
-- **Role-based access** — middleware checks `req.user.role` against allowed roles
-- **Offer-level ACL** — users with `offerAccess: 'specific'` only see their assigned offers
+- **Role-based access** — `authorize()` normalizes the stored role first, so a pre-migration
+  role string resolves instead of failing every check; `requireManager` guards the admin routes
+- **Per-owner data isolation** — every authenticated endpoint is scoped by `createdBy` via
+  `server/utils/scope.js`; no role sees another user's offers, advertisers, clicks or reports
+- **404 over 403** — a document you do not own returns "not found", so ids cannot be enumerated
+- **Reference validation** — an offer cannot point at an advertiser or offer group you do not own
+  (`assertRefsOwned`), which otherwise leaked the advertiser's `postbackSecret` and enabled
+  forged conversions
+- **Settings allow-list** — `PARTNER_WRITABLE_SETTING_KEYS` (currently empty). Settings are one
+  account-wide document, so a deny-list was unsafe: it let a partner rewrite `timezone`,
+  `globalPostbackUrl` and the `default*` offer seeds
+- **Offer-level ACL** — users with `offerAccess: 'specific'` are narrowed further within their own offers
 - **XSS sanitization** — offer name, description, notes sanitized via `xss` library before save
 - **Postback secret** — per-advertiser secret required for conversion postbacks (when configured)
 - **Bot detection** — 16 user-agent patterns block automated traffic on smart links (Googlebot, curl, Selenium, Puppeteer, etc.)
@@ -1232,3 +1283,81 @@ The `enableClickToConversionTime`, `clickToConversionValue`, and `clickToConvers
 The old SubID, Country, and Device standalone reports have been removed. Country and device breakdowns are now available as expand rows inside the Offer Report (per-offer byCountry + byDevice sub-tables from DailyStat Maps). The `bySubId`, `byCountry`, `byDevice`, `byBrowser`, `byOs`, `bySource` Maps in DailyStat are still populated by `updateDailyStats()` and available for future use.
 
 Last verified: 2026-08-17
+
+---
+
+## Changelog — 2026-08-19
+
+### Postback URL generation — was producing incomplete URLs
+The URL was assembled by hand in four places (`server/utils/postbackUrl.js`,
+`OfferDetail.jsx`, `AdvertiserDetail.jsx`, `Advertisers.jsx`) and the three the user
+actually copies from all dropped `txn_id` and the preset's `extraParams`. A Katalys URL
+therefore shipped without `{conversion_status}` and `{postback_operation}`, so refunds and
+amount corrections never reached TrackHive. Now a single shared builder
+(`client/src/utils/postbackUrl.js`) feeds all three pages, and the server builder emits
+`txn_id`.
+
+### Network presets — four latent click_id bugs
+**The rule:** `macros.click_id` MUST be the network's token for the same parameter named in
+`clickIdParam`. We send our id out as `?<clickIdParam>=<id>`; the only way to get it back is
+for the network to echo that exact parameter. Breaking it is silent — the postback arrives,
+the click lookup fails, and every conversion is lost with "click_id is required".
+
+Four of seven presets broke it and were fixed against each network's published docs:
+
+| Network | was | now |
+|---|---|---|
+| Everflow | `{transaction_id}` (Everflow's own id) | `{sub1}` |
+| Affise | `{clickid}` (not a real Affise macro) | `{sub1}` |
+| Trackier | `{click_id}` | `{p1}` |
+| Cellxpert | `[clickid]` | `[xid]` |
+
+Also added: `{Status}` (Impact) and `{status}` (Affise) so reversals are detected; a
+per-network `lifecycle` block mapping each network's vocabulary (Katalys `delete`, Impact
+`MODIFIED`, Affise numeric `3`) so adding a network never means editing the postback
+controller; and `verified` / `docsUrl` flags — Trackier and Cellxpert are `verified: false`
+and render an amber warning in the UI.
+
+`server/config/validatePresets.js` enforces all of this at boot. A malformed preset aborts
+startup rather than silently losing that network's conversions.
+
+### Per-advertiser tracking domain
+`Advertiser.trackingDomain` (optional ObjectId → TrackingDomain). The postback is registered
+once per advertiser on the network side, so the domain in that URL has to be a deliberate
+property of the advertiser — not an account default that drifts, and not "whichever verified
+domain sorts first" once there are several. Resolution order lives in
+`resolveAdvertiserDomain()`: advertiser's own → account default → first verified. Empty
+falls back, so existing advertisers are unaffected.
+
+This also fixed a live inconsistency: AdvertiserDetail read only `settings.trackingDomain`
+while OfferDetail used the *offer's* domain for the postback URL, so the same advertiser
+showed different URLs on different pages — and the Offer page's was wrong, because the
+postback belongs to the advertiser.
+
+### UI
+- Reports: quick date ranges (Today / Yesterday / Last 2 days / Last 7 days / Custom).
+  Picking one applies immediately; the calendar shows only under Custom; the highlight
+  re-derives from the dates so manual edits stay honest.
+- Refresh button on Reports, Manage Offers and Advertisers — reloads the list in place.
+  The Reports one also reloads the Offer dropdown so a new offer appears without an F5.
+- Logs: Click ID column, click-to-copy (needed for network postback test forms).
+- Advertisers table: single-line names, sticky header, vertical scroll.
+
+### Katalys — findings from live testing
+- Test Connection lives at **Postbacks → open the postback → Test Connection**; it posts
+  dummy data to the saved Target URL. Only `sub1` (→ `click_id`) and `Value` (→ `revenue`)
+  matter to us.
+- `{conversion_status}` returns a **number**, not `approved`/`success`. The numeric mapping
+  is not published. Reversal detection therefore relies on `{postback_operation}`
+  (`create`/`update`/`delete`), which is documented and reliable.
+- `{sub1}` is **not** a Katalys token — the payload field must use `{aff_sub1}`.
+- "Limit to Programs" left empty means the postback fires for **every** approved program,
+  producing constant failures from conversions that never carried our click id. Repeated
+  failures move the postback to Failed status and Katalys stops sending it.
+
+### Known gap
+A real end-to-end Katalys conversion has still not been verified. The `$7.19` attempt failed
+with `400 click_id is required` because `{aff_sub1}` resolved empty. Everything downstream of
+that (secret, POST body handling, revenue parsing, reversal) is confirmed working.
+
+Last verified: 2026-08-19

@@ -15,6 +15,8 @@ const networkBadgeColors = {
  affise: 'bg-purple-100 text-purple-700',
  trackier: 'bg-teal-100 text-teal-700',
  cellxpert: 'bg-orange-100 text-orange-700',
+ katalys: 'bg-rose-100 text-rose-700',
+ smartadv: 'bg-emerald-100 text-emerald-700',
  custom: 'bg-gray-100 text-gray-600',
 };
 
@@ -148,7 +150,7 @@ export default function Advertisers() {
 
  const getNetworkLabel = (key) => {
   if (presets?.[key]) return presets[key].label;
-  const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', custom: 'Custom / Other' };
+  const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', custom: 'Custom / Other' };
   return fallback[key] || key;
  };
 
@@ -322,6 +324,8 @@ export default function Advertisers() {
             <option value="affise">Affise</option>
             <option value="trackier">Trackier</option>
             <option value="cellxpert">Cellxpert</option>
+            <option value="katalys">Katalys</option>
+            <option value="smartadv">SmartAdv</option>
             <option value="custom">Custom / Other</option>
            </>
           )}
