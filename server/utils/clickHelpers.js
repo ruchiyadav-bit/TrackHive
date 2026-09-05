@@ -41,6 +41,24 @@ let lastTrustProxyWarn = 0;
 function resolveClientIp(req) {
   const clean = (v) => String(v || '').trim().replace(/^::ffff:/, '');
 
+  // Cloudflare fronts every request to this app (see developer-note.md) and
+  // sets CF-Connecting-IP to the real visitor IP at its edge — trustworthy
+  // regardless of hop count, unlike req.ip/X-Forwarded-For below which depend
+  // on TRUST_PROXY matching the exact Cloudflare -> Nginx -> Node chain. That
+  // mismatch was the bug: req.ip was resolving to Cloudflare's own edge IP
+  // (a public address, so it passed the checks below), which geolocates to
+  // the US regardless of the visitor's real country, and got forwarded to
+  // advertiser offer URLs via the {ip} macro, where Everflow-based networks'
+  // proxy detection then flagged the click as invalid.
+  //
+  // This is only trustworthy if the origin is reachable ONLY through
+  // Cloudflare — Nginx/the firewall should restrict inbound traffic to
+  // Cloudflare's published IP ranges, otherwise a client could set its own
+  // CF-Connecting-IP header directly and spoof this exactly like it could
+  // spoof X-Forwarded-For.
+  const cfIp = clean(req.headers['cf-connecting-ip']);
+  if (isPublicIp(cfIp)) return cfIp;
+
   const direct = clean(req.ip);
   if (isPublicIp(direct)) return direct;
 
@@ -51,14 +69,13 @@ function resolveClientIp(req) {
   const firstPublic = chain.find(isPublicIp);
   if (firstPublic) {
     // req.ip was internal, so TRUST_PROXY doesn't match the real hop count.
-    // The fallback below is correct but weaker (a client could prepend a fake
-    // public IP). Say so — loudly enough to notice, throttled so it can't flood.
+    // CF-Connecting-IP above already covers the normal path; this only fires
+    // for requests that somehow reach the app without it (e.g. local dev).
     if (chain.length && Date.now() - lastTrustProxyWarn > 600000) {
       lastTrustProxyWarn = Date.now();
       console.warn(
-        `[IP] TRUST_PROXY=${process.env.TRUST_PROXY || 1} looks wrong: req.ip='${direct}' is internal. ` +
-        `x-forwarded-for has ${chain.length} entries, so set TRUST_PROXY=${chain.length} ` +
-        `(Render → Environment) to make req.ip authoritative and block IP spoofing.`
+        `[IP] TRUST_PROXY=${process.env.TRUST_PROXY || 1} looks wrong and no CF-Connecting-IP header was present: req.ip='${direct}' is internal. ` +
+        `x-forwarded-for has ${chain.length} entries, so set TRUST_PROXY=${chain.length} to make req.ip authoritative and block IP spoofing.`
       );
     }
     return firstPublic;
