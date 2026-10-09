@@ -11,6 +11,11 @@ const {
   resolveTimezone, zonedStartOfDayUtc, zonedEndOfDayUtc,
   todayInTz, daysAgoInTz,
 } = require('../utils/appTime');
+// Read-only team members get the same rows with the money taken out and a
+// profit/loss badge put in. Applied at the res.json boundary so no report can
+// ship a figure the viewer is not allowed to see — see utils/teamView.js.
+const { teamReportPayload, earningsBadge, teamFields, loadSpend } = require('../utils/teamView');
+const { isTeam } = require('../config/roles');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -60,6 +65,17 @@ const INVALID_CLICKS_EXPR = {
 };
 
 /**
+ * Mongo $cond expression for "Blocked Clicks" — EVERY block, frequency-cap
+ * included. This is the right subtrahend for the Clicks total: a blocked
+ * visitor never reached the offer, so counting it in Clicks inflates the CVR
+ * denominator. Invalid stays frequency-cap-free (see above) so a single click
+ * is never shown in both the Dup and the Invalid card at once.
+ */
+const BLOCKED_CLICKS_EXPR = {
+  $cond: ['$isBlocked', 1, 0],
+};
+
+/**
  * Mongo $cond expression for "Unique Clicks" on raw Click aggregations.
  * Excludes duplicates AND any blocked click (bot/geo/device/ip/frequency-cap)
  * — a blocked visitor was never actually delivered to the offer.
@@ -77,7 +93,11 @@ function buildSummary(raw) {
   const grossClicks = raw.grossClicks || 0;
   const dupClicks = raw.dupClicks || 0;
   const invalidClicks = raw.invalidClicks || 0;
-  const clicks = grossClicks - invalidClicks;
+  // Subtract EVERY block, not just Invalid — a frequency-capped click was
+  // never delivered to the offer, so it must not sit in the CVR denominator.
+  // `?? invalidClicks` keeps older callers that don't supply blockedClicks working.
+  const blockedClicks = raw.blockedClicks ?? invalidClicks;
+  const clicks = grossClicks - blockedClicks;
   const uniqueClicks = raw.uniqueClicks || 0;
   const conversions = raw.conversions || 0;
   const revenue = raw.revenue || 0;
@@ -90,13 +110,18 @@ function buildSummary(raw) {
     uniqueClicks,
     dupClicks,
     invalidClicks,
+    blockedClicks,
     totalCv: conversions,
     cv: conversions,
     cvr: Number(safeDivide(conversions, clicks) * 100).toFixed(3),
-    cpc: Number(safeDivide(revenue, clicks)).toFixed(2),
-    cpa: Number(safeDivide(revenue, conversions)).toFixed(2),
-    rpc: Number(safeDivide(profit, clicks)).toFixed(2),
-    rpa: Number(safeDivide(profit, conversions)).toFixed(2),
+    // C* = cost side (what we PAY OUT), R* = revenue side (what we EARN).
+    // Same convention as the offer wizard, where Revenue types are RP* and
+    // Payout types CP*. These four previously all ran off revenue/profit, so
+    // CPC showed RPC's value and RPC showed profit-per-click.
+    cpc: Number(safeDivide(payout, clicks)).toFixed(4),
+    cpa: Number(safeDivide(payout, conversions)).toFixed(2),
+    rpc: Number(safeDivide(revenue, clicks)).toFixed(4),
+    rpa: Number(safeDivide(revenue, conversions)).toFixed(2),
     revenue: Number(revenue).toFixed(2),
     payout: Number(payout).toFixed(2),
     profit: Number(profit).toFixed(2),
@@ -106,7 +131,7 @@ function buildSummary(raw) {
 
 /** Add computed rate fields to a row object */
 function addRateFields(row) {
-  const clicks = (row.grossClicks || row.clicks || 0) - (row.invalidClicks || 0);
+  const clicks = (row.grossClicks || row.clicks || 0) - (row.blockedClicks ?? row.invalidClicks ?? 0);
   const effectiveClicks = clicks > 0 ? clicks : (row.clicks || 0);
   const conversions = row.conversions || 0;
   const revenue = row.revenue || 0;
@@ -117,10 +142,11 @@ function addRateFields(row) {
     ...row,
     profit,
     cvr: Number(safeDivide(conversions, effectiveClicks) * 100).toFixed(3),
-    cpc: Number(safeDivide(revenue, effectiveClicks)).toFixed(2),
-    cpa: Number(safeDivide(revenue, conversions)).toFixed(2),
-    rpc: Number(safeDivide(profit, effectiveClicks)).toFixed(2),
-    rpa: Number(safeDivide(profit, conversions)).toFixed(2),
+    // See buildSummary — C* = payout side, R* = revenue side.
+    cpc: Number(safeDivide(payout, effectiveClicks)).toFixed(4),
+    cpa: Number(safeDivide(payout, conversions)).toFixed(2),
+    rpc: Number(safeDivide(revenue, effectiveClicks)).toFixed(4),
+    rpa: Number(safeDivide(revenue, conversions)).toFixed(2),
     margin: Number(safeDivide(profit, revenue) * 100).toFixed(3),
   };
 }
@@ -138,7 +164,7 @@ function addRateFields(row) {
  * 'conversionAt' for conversion metrics (conversions belong to the day the
  * postback landed, not the day the click happened).
  */
-function clickDateMatch(from, to, offerId, scopeIds, tz, field = 'clickedAt') {
+function clickDateMatch(from, to, offerId, scopeIds, tz, field = 'clickedAt', clickId = '') {
   const match = {
     [field]: { $gte: zonedStartOfDayUtc(from, tz), $lte: zonedEndOfDayUtc(to, tz) },
   };
@@ -156,6 +182,15 @@ function clickDateMatch(from, to, offerId, scopeIds, tz, field = 'clickedAt') {
     match.offerId = allowed ? requested : { $in: [] };
   }
 
+  // Optional Click ID search, available on every report. Matches ids that
+  // START with what was typed, so a full id or its first few characters both
+  // work. Click ids are lowercase hex; the anchored, case-sensitive regex can
+  // use the clickId index.
+  const cid = String(clickId || '').trim().toLowerCase();
+  if (cid) {
+    match.clickId = { $regex: '^' + cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
+  }
+
   return match;
 }
 
@@ -171,6 +206,7 @@ function clickMetricAccumulators() {
     uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
     dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
     invalidClicks: { $sum: INVALID_CLICKS_EXPR },
+    blockedClicks: { $sum: BLOCKED_CLICKS_EXPR },
   };
 }
 
@@ -184,6 +220,7 @@ function mergeByKey(clickRows, convRows) {
       uniqueClicks: c.uniqueClicks || 0,
       dupClicks: c.dupClicks || 0,
       invalidClicks: c.invalidClicks || 0,
+      blockedClicks: c.blockedClicks || 0,
       conversions: 0, revenue: 0, payout: 0,
       offerName: c.offerName,
     });
@@ -192,7 +229,7 @@ function mergeByKey(clickRows, convRows) {
     const key = String(v._id);
     const row = out.get(key) || {
       _id: v._id,
-      grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0,
+      grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, blockedClicks: 0,
       conversions: 0, revenue: 0, payout: 0,
       offerName: v.offerName,
     };
@@ -238,7 +275,7 @@ exports.conversionReport = async (req, res, next) => {
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
     // Conversions are windowed on conversionAt, not clickedAt
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt', req.query.click_id);
     match.converted = true;
 
     // Summary
@@ -256,7 +293,7 @@ exports.conversionReport = async (req, res, next) => {
     const rawSummary = summaryAgg[0] || { conversions: 0, revenue: 0, payout: 0 };
 
     // For summary we also need total clicks in the same date range (not just converted)
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
     const clickSummary = await Click.aggregate([
       { $match: clickMatch },
       {
@@ -266,16 +303,18 @@ exports.conversionReport = async (req, res, next) => {
           uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
+          blockedClicks: { $sum: BLOCKED_CLICKS_EXPR },
         },
       },
     ]);
-    const cs = clickSummary[0] || { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0 };
+    const cs = clickSummary[0] || { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, blockedClicks: 0 };
 
     const summary = buildSummary({
       grossClicks: cs.grossClicks,
       uniqueClicks: cs.uniqueClicks,
       dupClicks: cs.dupClicks,
       invalidClicks: cs.invalidClicks,
+      blockedClicks: cs.blockedClicks,
       conversions: rawSummary.conversions,
       revenue: rawSummary.revenue,
       payout: rawSummary.payout,
@@ -311,7 +350,7 @@ exports.conversionReport = async (req, res, next) => {
       .sort({ [sortField]: sortDir })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .select('clickId offerId offerName conversionAt conversionEvent revenue payout ip country device source subId1')
+      .select('clickId offerId offerName conversionAt conversionEvent revenue payout saleAmount ip country device source subId1')
       .lean();
 
     const formattedRows = rows.map(r => ({
@@ -323,6 +362,8 @@ exports.conversionReport = async (req, res, next) => {
       revenue: Number((r.revenue || 0).toFixed(2)),
       payout: Number((r.payout || 0).toFixed(2)),
       profit: Number(((r.revenue || 0) - (r.payout || 0)).toFixed(2)),
+      // The merchant's order total, for reference. teamView strips it.
+      saleAmount: Number((r.saleAmount || 0).toFixed(2)),
       ip: r.ip,
       country: r.country || '—',
       device: r.device || '—',
@@ -330,13 +371,18 @@ exports.conversionReport = async (req, res, next) => {
       subId1: r.subId1 || '—',
     }));
 
-    res.json({
+    res.json(await teamReportPayload({
       summary,
       chart: chartData,
       rows: formattedRows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
-    });
+      // The client renders every row timestamp in this zone. Omitting it made
+      // the rows silently fall back to the VIEWER's browser timezone while the
+      // summary above them stayed bucketed in the account zone — one page, two
+      // timezones, and totals that refused to line up with the advertiser's.
+      timezone: tz,
+    }, req.user, { from: dateFrom, to: dateTo, rowMode: 'event', scopeIds, offerId: offer_id }));
   } catch (err) {
     next(err);
   }
@@ -362,8 +408,8 @@ exports.offerReport = async (req, res, next) => {
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
     // Clicks are windowed on clickedAt; conversions on conversionAt.
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt');
-    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
+    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt', req.query.click_id);
     convMatch.converted = true;
 
     const [clicksByOffer, convByOffer] = await Promise.all([
@@ -393,10 +439,11 @@ exports.offerReport = async (req, res, next) => {
       uniqueClicks: a.uniqueClicks + r.uniqueClicks,
       dupClicks: a.dupClicks + r.dupClicks,
       invalidClicks: a.invalidClicks + r.invalidClicks,
+      blockedClicks: a.blockedClicks + r.blockedClicks,
       conversions: a.conversions + r.conversions,
       revenue: a.revenue + r.revenue,
       payout: a.payout + r.payout,
-    }), { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, conversions: 0, revenue: 0, payout: 0 });
+    }), { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, blockedClicks: 0, conversions: 0, revenue: 0, payout: 0 });
     const summary = buildSummary(totals);
 
     // Chart — by local day across the whole selection
@@ -440,10 +487,11 @@ exports.offerReport = async (req, res, next) => {
       offerId: r._id,
       offerName: r.offerName || '—',
       grossClicks: r.grossClicks,
-      clicks: r.grossClicks - r.invalidClicks,
+      clicks: r.grossClicks - (r.blockedClicks ?? r.invalidClicks),
       uniqueClicks: r.uniqueClicks,
       dupClicks: r.dupClicks,
       invalidClicks: r.invalidClicks,
+      blockedClicks: r.blockedClicks ?? r.invalidClicks,
       conversions: r.conversions,
       revenue: r.revenue,
       payout: r.payout,
@@ -483,14 +531,14 @@ exports.offerReport = async (req, res, next) => {
       row.expand = expandByOffer.get(String(row.offerId)) || { byCountry: [], byDevice: [] };
     }
 
-    res.json({
+    res.json(await teamReportPayload({
       summary,
       chart: chartData,
       rows: pageRows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
       timezone: tz,
-    });
+    }, req.user, { from: dateFrom, to: dateTo, rowKey: 'offerId', scopeIds, offerId: offer_id }));
   } catch (err) {
     next(err);
   }
@@ -512,8 +560,8 @@ exports.dailyReport = async (req, res, next) => {
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt');
-    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
+    const clickMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
+    const convMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt', req.query.click_id);
     convMatch.converted = true;
 
     const [clicksByDay, convByDay] = await Promise.all([
@@ -541,10 +589,11 @@ exports.dailyReport = async (req, res, next) => {
       uniqueClicks: a.uniqueClicks + r.uniqueClicks,
       dupClicks: a.dupClicks + r.dupClicks,
       invalidClicks: a.invalidClicks + r.invalidClicks,
+      blockedClicks: a.blockedClicks + r.blockedClicks,
       conversions: a.conversions + r.conversions,
       revenue: a.revenue + r.revenue,
       payout: a.payout + r.payout,
-    }), { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, conversions: 0, revenue: 0, payout: 0 });
+    }), { grossClicks: 0, uniqueClicks: 0, dupClicks: 0, invalidClicks: 0, blockedClicks: 0, conversions: 0, revenue: 0, payout: 0 });
     const summary = buildSummary(totals);
 
     const chartData = [...merged]
@@ -561,24 +610,25 @@ exports.dailyReport = async (req, res, next) => {
     const sorted = sortRows(merged.map(r => addRateFields({
       date: r._id,
       grossClicks: r.grossClicks,
-      clicks: r.grossClicks - r.invalidClicks,
+      clicks: r.grossClicks - (r.blockedClicks ?? r.invalidClicks),
       uniqueClicks: r.uniqueClicks,
       dupClicks: r.dupClicks,
       invalidClicks: r.invalidClicks,
+      blockedClicks: r.blockedClicks ?? r.invalidClicks,
       conversions: r.conversions,
       revenue: r.revenue,
       payout: r.payout,
     })), sort === '-date' ? '-date' : sort);
     const pageRows = sorted.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
-    res.json({
+    res.json(await teamReportPayload({
       summary,
       chart: chartData,
       rows: pageRows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
       timezone: tz,
-    });
+    }, req.user, { from: dateFrom, to: dateTo, rowKey: 'date', scopeIds, offerId: offer_id }));
   } catch (err) {
     next(err);
   }
@@ -609,7 +659,7 @@ exports.hourlyReport = async (req, res, next) => {
       return res.status(400).json({ error: 'Hourly report supports a maximum of 7 days range' });
     }
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
 
     // Summary from same click data
     const summaryAgg = await Click.aggregate([
@@ -621,6 +671,7 @@ exports.hourlyReport = async (req, res, next) => {
           uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
+          blockedClicks: { $sum: BLOCKED_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -651,6 +702,7 @@ exports.hourlyReport = async (req, res, next) => {
           uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
+          blockedClicks: { $sum: BLOCKED_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -664,10 +716,11 @@ exports.hourlyReport = async (req, res, next) => {
     const rows = data.map(d => addRateFields({
       hour: d._id,
       grossClicks: d.grossClicks,
-      clicks: d.grossClicks - d.invalidClicks,
+      clicks: d.grossClicks - (d.blockedClicks ?? d.invalidClicks),
       uniqueClicks: d.uniqueClicks,
       dupClicks: d.dupClicks,
       invalidClicks: d.invalidClicks,
+      blockedClicks: d.blockedClicks ?? d.invalidClicks,
       conversions: d.conversions,
       revenue: d.revenue,
       payout: d.payout,
@@ -682,13 +735,18 @@ exports.hourlyReport = async (req, res, next) => {
       profit: Number(r.profit),
     }));
 
-    res.json({
+    res.json(await teamReportPayload({
       summary,
       chart: chartData,
       rows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
-    });
+      // The client renders every row timestamp in this zone. Omitting it made
+      // the rows silently fall back to the VIEWER's browser timezone while the
+      // summary above them stayed bucketed in the account zone — one page, two
+      // timezones, and totals that refused to line up with the advertiser's.
+      timezone: tz,
+    }, req.user, { from: dateFrom, to: dateTo, rowKey: null, scopeIds, offerId: offer_id }));
   } catch (err) {
     next(err);
   }
@@ -710,7 +768,7 @@ exports.logReport = async (req, res, next) => {
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
 
-    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
+    const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
 
     // Status filter
     switch (status) {
@@ -747,7 +805,7 @@ exports.logReport = async (req, res, next) => {
     }
 
     // Summary counts
-    const baseMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
+    const baseMatch = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
     const summaryAgg = await Click.aggregate([
       { $match: baseMatch },
       {
@@ -757,6 +815,7 @@ exports.logReport = async (req, res, next) => {
           uniqueClicks: { $sum: UNIQUE_CLICKS_EXPR },
           dupClicks: { $sum: { $cond: ['$isDuplicate', 1, 0] } },
           invalidClicks: { $sum: INVALID_CLICKS_EXPR },
+          blockedClicks: { $sum: BLOCKED_CLICKS_EXPR },
           conversions: { $sum: { $cond: ['$converted', 1, 0] } },
           revenue: { $sum: '$revenue' },
           payout: { $sum: '$payout' },
@@ -827,13 +886,18 @@ exports.logReport = async (req, res, next) => {
       };
     });
 
-    res.json({
+    res.json(await teamReportPayload({
       summary,
       chart: [],
       rows,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
       dateRange: { from: dateFrom, to: dateTo },
-    });
+      // The client renders every row timestamp in this zone. Omitting it made
+      // the rows silently fall back to the VIEWER's browser timezone while the
+      // summary above them stayed bucketed in the account zone — one page, two
+      // timezones, and totals that refused to line up with the advertiser's.
+      timezone: tz,
+    }, req.user, { from: dateFrom, to: dateTo, rowMode: 'event', scopeIds, offerId: offer_id }));
   } catch (err) {
     next(err);
   }
@@ -852,11 +916,19 @@ exports.exportCsv = async (req, res, next) => {
     const dateFrom = from || daysAgo(30, tz);
     const dateTo = to || todayStr(tz);
 
+    // A team member's CSV must carry exactly what their screen carries.
+    // Exporting is the obvious way around a hidden column, so the same rules
+    // are applied here rather than trusted to the UI.
+    const team = isTeam(req.user);
+    const fields = team ? teamFields(req.user) : null;
+    // Entered ad spend for the range — the badge is scored against it.
+    const spend = team ? await loadSpend(req.user, { from: dateFrom, to: dateTo, scopeIds, offerId: offer_id }) : null;
+
     // Helper: same click/conversion split the on-screen reports use, so a CSV
     // always matches what the user just looked at.
     const aggregateBy = async (groupExpr, convGroupExpr) => {
-      const cm = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt');
-      const vm = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
+      const cm = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
+      const vm = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt', req.query.click_id);
       vm.converted = true;
       const [ca, va] = await Promise.all([
         Click.aggregate([
@@ -879,32 +951,90 @@ exports.exportCsv = async (req, res, next) => {
       return mergeByKey(ca, va);
     };
 
+    /** Quote a free-text cell so a comma in an offer name cannot shift columns. */
+    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const money = v => (Number(v) || 0).toFixed(2);
+    const pct = v => `${(Number(v) || 0).toFixed(3)}%`;
+
+    /**
+     * Columns are declared rather than concatenated so the team filter has
+     * something to filter. `money: true` never reaches a team member, and
+     * `field` ties a column to the manager's per-member toggle.
+     */
+    const build = (cols, data, badgeOpts = { mode: 'none' }) => {
+      const visible = cols.filter(c => {
+        if (!team) return true;
+        if (c.money) return false;
+        if (c.field && !fields[c.field]) return false;
+        return true;
+      });
+      if (team && fields.status) {
+        visible.push({
+          h: 'Performance',
+          v: d => {
+            const cv = d.conversions !== undefined
+              ? d.conversions
+              : (d.converted !== undefined ? (d.converted ? 1 : 0) : 1);
+            const { spendFor, ...rest } = badgeOpts;
+            const opts = spendFor ? { ...rest, spend: spendFor(d) } : rest;
+            return q(earningsBadge(d.revenue, cv, opts).pnlLabel || '');
+          },
+        });
+      }
+      return {
+        headers: visible.map(c => c.h).join(','),
+        rows: data.map(d => visible.map(c => c.v(d)).join(',')),
+      };
+    };
+
     let headers, rows, filename;
 
     switch (type) {
       case 'conversion': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt');
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'conversionAt', req.query.click_id);
         match.converted = true;
         const data = await Click.find(match).sort({ conversionAt: -1 }).select('clickId offerName conversionAt conversionEvent revenue payout country device source').lean();
-        headers = 'Click ID,Offer,Conversion At,Event,Revenue,Payout,Profit,Country,Device,Source';
-        rows = data.map(d => `${d.clickId},"${d.offerName || ''}",${d.conversionAt?.toISOString() || ''},${d.conversionEvent || 'default'},${(d.revenue || 0).toFixed(2)},${(d.payout || 0).toFixed(2)},${((d.revenue || 0) - (d.payout || 0)).toFixed(2)},${d.country || ''},${d.device || ''},${d.source || ''}`);
+        ({ headers, rows } = build([
+          { h: 'Click ID',      v: d => d.clickId || '' },
+          { h: 'Offer',         v: d => q(d.offerName) },
+          { h: 'Conversion At', v: d => d.conversionAt?.toISOString() || '' },
+          { h: 'Event',         v: d => d.conversionEvent || 'default' },
+          { h: 'Revenue', money: true, v: d => money(d.revenue) },
+          { h: 'Payout',  money: true, v: d => money(d.payout) },
+          { h: 'Profit',  money: true, v: d => money((d.revenue || 0) - (d.payout || 0)) },
+          { h: 'Country', field: 'country', v: d => d.country || '' },
+          { h: 'Device',  field: 'device',  v: d => d.device || '' },
+          { h: 'Source',  field: 'source',  v: d => d.source || '' },
+        ], data, { mode: 'event' }));
         filename = `conversion_${dateFrom}_to_${dateTo}.csv`;
         break;
       }
       case 'offer': {
         const data = (await aggregateBy('$offerId', '$offerId'))
           .sort((a, b) => b.revenue - a.revenue);
-        headers = 'Offer,Gross Clicks,Clicks,Unique,Dup,Invalid,CV,CVR,Revenue,Payout,Profit,Margin';
-        rows = data.map(d => {
-          const clicks = d.grossClicks - d.invalidClicks;
-          const profit = d.revenue - d.payout;
-          return `"${d.offerName || ''}",${d.grossClicks},${clicks},${d.uniqueClicks},${d.dupClicks},${d.invalidClicks},${d.conversions},${(safeDivide(d.conversions, clicks) * 100).toFixed(3)}%,${d.revenue.toFixed(2)},${d.payout.toFixed(2)},${profit.toFixed(2)},${(safeDivide(profit, d.revenue) * 100).toFixed(3)}%`;
-        });
+        const clicksOf = d => d.grossClicks - (d.blockedClicks ?? d.invalidClicks);
+        ({ headers, rows } = build([
+          { h: 'Offer',        v: d => q(d.offerName) },
+          { h: 'Gross Clicks', field: 'grossClicks',   v: d => d.grossClicks },
+          { h: 'Clicks',       field: 'clicks',        v: d => clicksOf(d) },
+          { h: 'Unique',       field: 'uniqueClicks',  v: d => d.uniqueClicks },
+          { h: 'Dup',          field: 'dupClicks',     v: d => d.dupClicks },
+          { h: 'Invalid',      field: 'invalidClicks', v: d => d.invalidClicks },
+          { h: 'CV',           field: 'conversions',   v: d => d.conversions },
+          { h: 'CVR',          field: 'cvr',           v: d => pct(safeDivide(d.conversions, clicksOf(d)) * 100) },
+          { h: 'Revenue', money: true, v: d => money(d.revenue) },
+          { h: 'Payout',  money: true, v: d => money(d.payout) },
+          { h: 'Profit',  money: true, v: d => money(d.revenue - d.payout) },
+          { h: 'Margin',  money: true, v: d => pct(safeDivide(d.revenue - d.payout, d.revenue) * 100) },
+        ], data, {
+          mode: 'aggregate',
+          spendFor: d => (spend && spend.byOffer.has(String(d._id)) ? spend.byOffer.get(String(d._id)) : undefined),
+        }));
         filename = `offer_${dateFrom}_to_${dateTo}.csv`;
         break;
       }
       case 'hourly': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
         const data = await Click.aggregate([
           { $match: match },
           {
@@ -919,27 +1049,48 @@ exports.exportCsv = async (req, res, next) => {
           },
           { $sort: { _id: -1 } },
         ]);
-        headers = 'Hour,Gross Clicks,Unique,CV,Revenue,Payout,Profit';
-        rows = data.map(d => `${d._id},${d.grossClicks},${d.uniqueClicks},${d.conversions},${d.revenue.toFixed(2)},${d.payout.toFixed(2)},${(d.revenue - d.payout).toFixed(2)}`);
+        ({ headers, rows } = build([
+          { h: 'Hour',         v: d => d._id },
+          { h: 'Gross Clicks', field: 'grossClicks',  v: d => d.grossClicks },
+          { h: 'Unique',       field: 'uniqueClicks', v: d => d.uniqueClicks },
+          { h: 'CV',           field: 'conversions',  v: d => d.conversions },
+          { h: 'Revenue', money: true, v: d => money(d.revenue) },
+          { h: 'Payout',  money: true, v: d => money(d.payout) },
+          { h: 'Profit',  money: true, v: d => money(d.revenue - d.payout) },
+        ], data, { mode: 'none' }));
         filename = `hourly_${dateFrom}_to_${dateTo}.csv`;
         break;
       }
       case 'log': {
-        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz);
+        const match = clickDateMatch(dateFrom, dateTo, offer_id, scopeIds, tz, 'clickedAt', req.query.click_id);
         const data = await Click.find(match).sort({ clickedAt: -1 }).limit(10000).select('clickId offerName clickedAt ip country device browser os source subId1 isDuplicate isBlocked isBot isVpn blockReason converted revenue payout').lean();
-        headers = 'Click ID,Offer,Timestamp,IP,Country,Device,Browser,OS,Source,Sub1,Status,Revenue,Payout,Profit';
-        rows = data.map(d => {
-          // A click can carry more than one flag at once (e.g. a frequency-cap
-          // block is both BLOCKED and DUP) — join every applicable label.
+        // A click can carry more than one flag at once (e.g. a frequency-cap
+        // block is both BLOCKED and DUP) — join every applicable label.
+        const clickStatus = d => {
           const labels = [];
           if (d.isBot) labels.push('BOT');
           if (d.isBlocked) labels.push('BLOCKED');
           if (d.isDuplicate) labels.push('DUP');
           if (d.isVpn) labels.push('VPN');
           if (d.converted) labels.push('CONVERTED');
-          const status = labels.length ? labels.join('+') : 'OK';
-          return `${d.clickId},"${d.offerName || ''}",${d.clickedAt?.toISOString() || ''},${d.ip || ''},${d.country || ''},${d.device || ''},${d.browser || ''},${d.os || ''},${d.source || ''},${d.subId1 || ''},${status},${(d.revenue || 0).toFixed(2)},${(d.payout || 0).toFixed(2)},${((d.revenue || 0) - (d.payout || 0)).toFixed(2)}`;
-        });
+          return labels.length ? labels.join('+') : 'OK';
+        };
+        ({ headers, rows } = build([
+          { h: 'Click ID',  v: d => d.clickId || '' },
+          { h: 'Offer',     v: d => q(d.offerName) },
+          { h: 'Timestamp', v: d => d.clickedAt?.toISOString() || '' },
+          { h: 'IP',        v: d => d.ip || '' },
+          { h: 'Country',   field: 'country', v: d => d.country || '' },
+          { h: 'Device',    field: 'device',  v: d => d.device || '' },
+          { h: 'Browser',   v: d => d.browser || '' },
+          { h: 'OS',        v: d => d.os || '' },
+          { h: 'Source',    field: 'source',  v: d => d.source || '' },
+          { h: 'Sub1',      v: d => d.subId1 || '' },
+          { h: 'Status',    v: d => clickStatus(d) },
+          { h: 'Revenue', money: true, v: d => money(d.revenue) },
+          { h: 'Payout',  money: true, v: d => money(d.payout) },
+          { h: 'Profit',  money: true, v: d => money((d.revenue || 0) - (d.payout || 0)) },
+        ], data, { mode: 'event' }));
         filename = `log_${dateFrom}_to_${dateTo}.csv`;
         break;
       }
@@ -947,12 +1098,24 @@ exports.exportCsv = async (req, res, next) => {
         // daily — same Click-based, timezone-bucketed source as the on-screen report
         const data = (await aggregateBy(localDay('clickedAt', tz), localDay('conversionAt', tz)))
           .sort((a, b) => String(b._id).localeCompare(String(a._id)));
-        headers = 'Date,Gross Clicks,Clicks,Unique,Dup,Invalid,CV,CVR,Revenue,Payout,Profit,Margin';
-        rows = data.map(d => {
-          const clicks = d.grossClicks - d.invalidClicks;
-          const profit = d.revenue - d.payout;
-          return `${d._id},${d.grossClicks},${clicks},${d.uniqueClicks},${d.dupClicks},${d.invalidClicks},${d.conversions},${(safeDivide(d.conversions, clicks) * 100).toFixed(3)}%,${d.revenue.toFixed(2)},${d.payout.toFixed(2)},${profit.toFixed(2)},${(safeDivide(profit, d.revenue) * 100).toFixed(3)}%`;
-        });
+        const clicksOf = d => d.grossClicks - (d.blockedClicks ?? d.invalidClicks);
+        ({ headers, rows } = build([
+          { h: 'Date',         v: d => d._id },
+          { h: 'Gross Clicks', field: 'grossClicks',   v: d => d.grossClicks },
+          { h: 'Clicks',       field: 'clicks',        v: d => clicksOf(d) },
+          { h: 'Unique',       field: 'uniqueClicks',  v: d => d.uniqueClicks },
+          { h: 'Dup',          field: 'dupClicks',     v: d => d.dupClicks },
+          { h: 'Invalid',      field: 'invalidClicks', v: d => d.invalidClicks },
+          { h: 'CV',           field: 'conversions',   v: d => d.conversions },
+          { h: 'CVR',          field: 'cvr',           v: d => pct(safeDivide(d.conversions, clicksOf(d)) * 100) },
+          { h: 'Revenue', money: true, v: d => money(d.revenue) },
+          { h: 'Payout',  money: true, v: d => money(d.payout) },
+          { h: 'Profit',  money: true, v: d => money(d.revenue - d.payout) },
+          { h: 'Margin',  money: true, v: d => pct(safeDivide(d.revenue - d.payout, d.revenue) * 100) },
+        ], data, {
+          mode: 'aggregate',
+          spendFor: d => (spend && spend.byDate.has(String(d._id)) ? spend.byDate.get(String(d._id)) : undefined),
+        }));
         filename = `daily_${dateFrom}_to_${dateTo}.csv`;
         break;
       }

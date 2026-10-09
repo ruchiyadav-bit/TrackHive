@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteSettings } from '../hooks/useSiteSettings';
 
 export default function Login() {
  const [email, setEmail] = useState('');
@@ -9,6 +10,7 @@ export default function Login() {
  const [error, setError] = useState('');
  const [loading, setLoading] = useState(false);
  const { login } = useAuth();
+ const { siteName } = useSiteSettings();
  const navigate = useNavigate();
 
  const handleSubmit = async (e) => {
@@ -30,7 +32,7 @@ export default function Login() {
  <div className="w-full max-w-md">
  <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8">
  <div className="text-center mb-8">
- <h1 className="text-2xl font-bold text-blue-600">TrackHive</h1>
+ <h1 className="text-2xl font-bold text-blue-600">{siteName}</h1>
  <p className="text-sm text-gray-500 mt-1">Sign in to your dashboard</p>
  </div>
 
@@ -90,6 +92,11 @@ export default function Login() {
  Sign up
  </Link>
  </p>
+ <nav aria-label="Public information" className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 border-t border-gray-100 pt-5 text-xs">
+ <Link to="/tracker-info" className="text-gray-500 hover:text-blue-700">Click Tracker</Link>
+ <Link to="/privacy" className="text-gray-500 hover:text-blue-700">Privacy</Link>
+ <Link to="/contact" className="text-gray-500 hover:text-blue-700">Contact</Link>
+ </nav>
  </div>
  </div>
  </div>

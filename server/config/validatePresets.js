@@ -9,8 +9,8 @@
 
 const REQUIRED_MACROS = ['click_id', 'revenue', 'payout', 'event'];
 
-/** Strip macro syntax so '{SubId1}' / '[xid]' compare as 'subid1' / 'xid'. */
-const bare = (token) => String(token || '').replace(/[{}[\]]/g, '').trim().toLowerCase();
+/** Strip macro syntax so '{SubId1}' / '[xid]' / '#S2#' compare as 'subid1' / 'xid' / 's2'. */
+const bare = (token) => String(token || '').replace(/[{}[\]#]/g, '').trim().toLowerCase();
 
 /**
  * @param {Object} presets - the networkPresets map
@@ -45,7 +45,8 @@ function checkPresets(presets) {
     // A literal (e.g. payout '0') is fine elsewhere but never for click_id.
     const clickMacro = preset.macros.click_id;
     if (clickMacro && preset.clickIdParam) {
-      if (!/[{[]/.test(clickMacro)) {
+      // {curly}, [square] and #HASH# (MaxBounty) are all macro syntax.
+      if (!/[{[]|^#.+#$/.test(clickMacro)) {
         errors.push(
           `${at}: macros.click_id is the literal "${clickMacro}" — it must be a macro token`
         );

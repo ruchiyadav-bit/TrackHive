@@ -45,6 +45,16 @@ const clickSchema = new mongoose.Schema(
     conversionAt: Date,
     revenue: { type: Number, default: 0 },
     payout: { type: Number, default: 0 },
+    /**
+     * The order total the network reported (Impact's "Sale Amount"), kept for
+     * reference only.
+     *
+     * It is NOT revenue: that money is the merchant's and never reaches us —
+     * our income is the commission, which lands in `revenue`. Nothing computes
+     * profit, margin or any rate from this field, and the team view never
+     * receives it.
+     */
+    saleAmount: { type: Number, default: 0 },
     profit: { type: Number, default: 0 },
     conversionEvent: String,
     // Approval status reported by the network (Katalys sends {conversion_status};

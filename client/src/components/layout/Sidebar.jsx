@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
-import { isManager } from '../../utils/roles';
+import { useSiteSettings } from '../../hooks/useSiteSettings';
+import { isManager, isReadOnly, canManageTeam } from '../../utils/roles';
 import {
   LayoutDashboard, FileText, BarChart3, Settings,
   ChevronDown, ChevronRight, PanelLeftClose, PanelLeft,
   Plus, Users, Globe, MousePointerClick, Calendar, Monitor, Megaphone,
-  Clock, ArrowRightLeft, ScrollText,
+  Clock, ArrowRightLeft, ScrollText, DollarSign, Activity,
 } from 'lucide-react';
 
 const navItems = [
@@ -21,7 +22,7 @@ const navItems = [
     path: '/offers',
     children: [
       { label: 'All Offers', path: '/offers', icon: FileText },
-      { label: '+ Create Offer', path: '/offers/new', icon: Plus },
+      { label: '+ Create Offer', path: '/offers/new', icon: Plus, writeOnly: true },
     ],
   },
   {
@@ -30,7 +31,7 @@ const navItems = [
     path: '/advertisers',
     children: [
       { label: 'All Advertisers', path: '/advertisers', icon: Megaphone },
-      { label: '+ Add Advertiser', path: '/advertisers/new', icon: Plus },
+      { label: '+ Add Advertiser', path: '/advertisers/new', icon: Plus, writeOnly: true },
     ],
   },
   {
@@ -46,13 +47,32 @@ const navItems = [
     ],
   },
   {
+    // Team member: enter daily ad spend. Manager / partner: the Ad Spend
+    // report for their own team.
+    label: 'Ad Spend',
+    icon: DollarSign,
+    path: '/ad-spend',
+  },
+  {
+    // Managers get the complete page. Partners get the read-only tracking,
+    // domain, data, offer URL and postback sections for their own data.
+    label: 'System Health',
+    icon: Activity,
+    path: '/system-health',
+    teamManagers: true,
+  },
+  {
     label: 'Settings',
     icon: Settings,
     path: '/settings',
     children: [
       { label: 'General', path: '/settings/general', icon: Settings },
-      { label: 'Tracking Domains', path: '/settings/tracking-domains', icon: Globe, managerOnly: true },
-      { label: 'Users', path: '/settings/users', icon: Users, managerOnly: true },
+      // Visible to managers and to team members (read-only for the latter);
+      // partners still have no reason to open it.
+      { label: 'Tracking Domains', path: '/settings/tracking-domains', icon: Globe, managerOrTeam: true },
+      // Manager: every user. Partner: "My Team" — only the team members it
+      // created (the server filters the list, not just this menu).
+      { label: 'Users', partnerLabel: 'My Team', path: '/settings/users', icon: Users, teamManagers: true },
     ],
   },
 ];
@@ -61,11 +81,24 @@ const navItems = [
  * Drop manager-only entries for partners, and drop any parent left with no
  * children — a "Settings" group that expands to nothing reads as a bug.
  */
-function visibleNav(items, canManage) {
+function visibleNav(items, canManage, readOnly, runsTeam) {
+  const allowed = item => {
+    if (item.managerOnly && !canManage) return false;
+    if (item.teamManagers && !runsTeam) return false;
+    if (item.managerOrTeam && !canManage && !readOnly) return false;
+    // "+ Create" style entries: pointless for an account that cannot write,
+    // and the server would refuse the POST anyway.
+    if (item.writeOnly && readOnly) return false;
+    // Pages a read-only team viewer has no business opening at all.
+    if (item.notTeam && readOnly) return false;
+    return true;
+  };
   return items.reduce((acc, item) => {
-    if (item.managerOnly && !canManage) return acc;
+    if (!allowed(item)) return acc;
     if (!item.children) return [...acc, item];
-    const children = item.children.filter(c => !c.managerOnly || canManage);
+    const children = item.children.filter(allowed).map(c =>
+      // Partners see their team screen under its own name.
+      (c.partnerLabel && !canManage ? { ...c, label: c.partnerLabel } : c));
     if (!children.length) return acc;
     return [...acc, { ...item, children }];
   }, []);
@@ -148,7 +181,8 @@ function NavItem({ item, collapsed }) {
 export default function Sidebar({ onCloseMobile }) {
   const [collapsed, setCollapsed] = useState(false);
   const { user } = useAuth();
-  const items = visibleNav(navItems, isManager(user));
+  const { siteName } = useSiteSettings();
+  const items = visibleNav(navItems, isManager(user), isReadOnly(user), canManageTeam(user));
 
   return (
     <aside
@@ -159,7 +193,7 @@ export default function Sidebar({ onCloseMobile }) {
       {/* Logo */}
       <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
         {!collapsed && (
-          <span className="text-lg font-bold text-blue-600">TrackHive</span>
+          <span className="text-lg font-bold text-blue-600">{siteName}</span>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}

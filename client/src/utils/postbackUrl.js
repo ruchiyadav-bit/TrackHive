@@ -19,10 +19,30 @@ const FALLBACK_MACROS = {
   event: '{event}',
 };
 
-export function buildPostbackUrl({ trackingDomain, preset, secret }) {
+/**
+ * The click_id macro for THIS advertiser. The preset's macro echoes the
+ * preset's default clickIdParam; when the advertiser's Click ID Param is
+ * changed (e.g. MaxBounty s2 -> s1), the postback has to read back that same
+ * param, in the preset's own syntax: #S2# -> #S1#, {sub1} -> {sub2}.
+ */
+export function clickIdMacro(preset, clickIdParam) {
+  const macro = preset?.macros?.click_id || FALLBACK_MACROS.click_id;
+  const param = String(clickIdParam || '').trim();
+  if (!param) return macro;
+  const presetParam = String(preset?.clickIdParam || '').trim();
+  if (presetParam && presetParam.toLowerCase() === param.toLowerCase()) return macro;
+  const m = macro.match(/^([{[#])(.+?)([}\]#])$/);
+  if (!m) return `{${param}}`;
+  const inner = m[2];
+  const upper = /[A-Z]/.test(inner) && inner === inner.toUpperCase();
+  return `${m[1]}${upper ? param.toUpperCase() : param}${m[3]}`;
+}
+
+export function buildPostbackUrl({ trackingDomain, preset, secret, clickIdParam }) {
   if (!trackingDomain) return '';
 
   const m = { ...FALLBACK_MACROS, ...(preset?.macros || {}) };
+  m.click_id = clickIdMacro(preset, clickIdParam);
   const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
 
   const parts = [

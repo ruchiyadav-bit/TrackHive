@@ -4,6 +4,12 @@ const Click = require('../models/Click');
 const {
   resolveTimezone, zonedStartOfDayUtc, zonedEndOfDayUtc, todayInTz, daysAgoInTz,
 } = require('../utils/appTime');
+// The Dashboard carries the same money as the reports do. A read-only team
+// member must not read it here either — see utils/teamView.js.
+const {
+  sanitizeDashboardObject, sanitizeDashboardList, sanitizeChart, teamFields, loadSpend,
+} = require('../utils/teamView');
+const { isTeam } = require('../config/roles');
 
 /**
  * Like the reports, the dashboard aggregates from the raw Click collection and
@@ -54,8 +60,16 @@ exports.getSummary = async (req, res, next) => {
     res.json({
       totalOffers: offers.length,
       activeOffers,
-      today: todayStats,
-      allTime: allTimeStats,
+      // The "today" card is scored against the daily target for the days it
+      // actually covers. "All time" is not: it spans an unknown number of
+      // months, so any target would be meaningless — it just loses its money.
+      today: await sanitizeDashboardObject(todayStats, req.user, {
+        mode: 'aggregate',
+        spend: isTeam(req.user)
+          ? (await loadSpend(req.user, { from: from || todayInTz(tz), to: to || todayInTz(tz), scopeIds: visibleIds })).total
+          : undefined,
+      }),
+      allTime: await sanitizeDashboardObject(allTimeStats, req.user, { mode: 'none' }),
     });
   } catch (err) {
     next(err);
@@ -132,9 +146,7 @@ exports.getChart = async (req, res, next) => {
 
     const stats = [...map.values()].sort((a, b) => String(a._id).localeCompare(String(b._id)));
 
-    res.json({
-      timezone: tz,
-      data: stats.map(s => ({
+    const points = stats.map(s => ({
         date: s._id,
         clicks: s.clicks,
         uniqueClicks: s.uniqueClicks,
@@ -145,7 +157,11 @@ exports.getChart = async (req, res, next) => {
         blockedClicks: s.blockedClicks,
         cr: s.clicks > 0 ? (s.conversions / s.clicks * 100).toFixed(2) : 0,
         epc: s.clicks > 0 ? (s.revenue / s.clicks).toFixed(4) : 0,
-      })),
+    }));
+
+    res.json({
+      timezone: tz,
+      data: isTeam(req.user) ? sanitizeChart(points, teamFields(req.user)) : points,
     });
   } catch (err) {
     next(err);
@@ -215,7 +231,16 @@ exports.getTopOffers = async (req, res, next) => {
       .sort((a, b) => (b[sortField] || 0) - (a[sortField] || 0))
       .slice(0, lim);
 
-    res.json({ offers: topOffers, timezone: tz });
+    res.json({
+      offers: await sanitizeDashboardList(topOffers, req.user, isTeam(req.user) ? await (async () => {
+        const spend = await loadSpend(req.user, { from: dateFrom, to: dateTo, scopeIds });
+        return {
+          mode: 'aggregate',
+          spendFor: o => (spend.byOffer.has(String(o._id)) ? spend.byOffer.get(String(o._id)) : undefined),
+        };
+      })() : {}),
+      timezone: tz,
+    });
   } catch (err) {
     next(err);
   }
@@ -235,7 +260,13 @@ exports.getRecentClicks = async (req, res, next) => {
       .limit(20)
       .select('clickId offerName country device browser converted revenue clickedAt');
 
-    res.json({ clicks });
+    // The client renders clickedAt in this timezone — without it the rows fall
+    // back to the viewer's browser zone and stop matching the dashboard totals.
+    res.json({
+      // One click each — a single event cannot be scored against a daily target.
+      clicks: await sanitizeDashboardList(clicks, req.user, { mode: 'event' }),
+      timezone: await resolveTimezone(req),
+    });
   } catch (err) {
     next(err);
   }

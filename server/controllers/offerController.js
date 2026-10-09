@@ -1,4 +1,6 @@
 const Offer = require('../models/Offer');
+// A team member may browse offers but must never read the money on them.
+const { stripMoneyForUser } = require('../utils/teamView');
 const xss = require('xss');
 const { ownerFilter, ownsDoc, denyNotFound } = require('../utils/scope');
 const Advertiser = require('../models/Advertiser');
@@ -15,6 +17,28 @@ const TrackingDomain = require('../models/TrackingDomain');
  * trackingDomain is the exception: domains are created by the manager and are
  * meant to be selectable by everyone, so it only has to exist.
  */
+/**
+ * Tracking domain is REQUIRED on every offer, with no default — the tracking
+ * link is built on it. On create it must be present; on update, a payload
+ * that carries the field cannot clear it, and one that does not carry it is
+ * only accepted when the offer already has a domain.
+ */
+const trackingDomainMissing = (data) =>
+  data.trackingDomain === undefined || data.trackingDomain === '' || data.trackingDomain === null;
+
+/** googleLandingUrl is optional; when given it must be a full http(s) URL. */
+function badGoogleLandingUrl(data) {
+  if (data.googleLandingUrl === undefined || data.googleLandingUrl === null || data.googleLandingUrl === '') return false;
+  try {
+    const u = new URL(String(data.googleLandingUrl).trim());
+    if (!/^https?:$/.test(u.protocol)) return true;
+    data.googleLandingUrl = u.toString();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 async function assertRefsOwned(data, user) {
   if (data.advertiser) {
     const ok = await Advertiser.exists({ _id: data.advertiser, ...ownerFilter(user) });
@@ -74,7 +98,7 @@ exports.listOffers = async (req, res, next) => {
     ]);
 
     res.json({
-      offers,
+      offers: offers.map(o => stripMoneyForUser(o, req.user)),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -91,6 +115,8 @@ exports.createOffer = async (req, res, next) => {
   try {
     const data = sanitizeOffer(req.body);
     if (!data.name?.trim()) return res.status(400).json({ error: 'Name is required' });
+    if (trackingDomainMissing(data)) return res.status(400).json({ error: 'Tracking domain is required' });
+    if (badGoogleLandingUrl(data)) return res.status(400).json({ error: 'Google Ads landing page must be a full URL (https://...)' });
 
     const refError = await assertRefsOwned(data, req.user);
     if (refError) return res.status(400).json({ error: refError });
@@ -115,7 +141,7 @@ exports.getOffer = async (req, res, next) => {
     // it. Worth knowing what that grants — the secret is the ONLY thing gating
     // /postback, so whoever holds it can forge conversions with arbitrary
     // revenue. If that ever needs narrowing, gate it here on isManager().
-    const advertiserFields = 'name postbackSecret network trackingDomain';
+    const advertiserFields = 'name postbackSecret network trackingDomain clickIdParam';
 
     const offer = await Offer.findOne({
       _id: req.params.id,
@@ -137,7 +163,7 @@ exports.getOffer = async (req, res, next) => {
       return res.status(403).json({ error: 'Access denied to this offer' });
     }
 
-    res.json({ offer });
+    res.json({ offer: stripMoneyForUser(offer, req.user) });
   } catch (error) {
     next(error);
   }
@@ -145,7 +171,17 @@ exports.getOffer = async (req, res, next) => {
 
 exports.updateOffer = async (req, res, next) => {
   try {
+    // Read before sanitizeOffer, which drops an empty trackingDomain.
+    const clearsDomain = Object.prototype.hasOwnProperty.call(req.body || {}, 'trackingDomain')
+      && trackingDomainMissing(req.body);
+    if (clearsDomain) return res.status(400).json({ error: 'Tracking domain is required' });
     const data = sanitizeOffer(req.body);
+    if (badGoogleLandingUrl(data)) return res.status(400).json({ error: 'Google Ads landing page must be a full URL (https://...)' });
+    if (trackingDomainMissing(data)) {
+      const current = await Offer.findOne({ _id: req.params.id, status: { $ne: 'deleted' }, ...ownerFilter(req.user) }).select('trackingDomain');
+      if (!current) return res.status(404).json({ error: 'Offer not found' });
+      if (!current.trackingDomain) return res.status(400).json({ error: 'Tracking domain is required' });
+    }
     if (data.expirationDate) data.expirationDate = new Date(data.expirationDate);
     // Ownership is not editable — otherwise a partner could hand their offer to
     // someone else, or claim one.

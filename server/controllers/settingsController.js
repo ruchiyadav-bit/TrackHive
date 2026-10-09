@@ -20,6 +20,20 @@ const DEFAULTS = {
   conversionSpikeMultiplier: 3,
 };
 
+// Public pages need the dashboard brand before a user signs in. Expose only
+// the website name; all operational settings remain behind authentication.
+exports.getPublic = async (req, res, next) => {
+  try {
+    const storedName = await Setting.getValue('siteName', DEFAULTS.siteName);
+    const siteName = typeof storedName === 'string' && storedName.trim()
+      ? storedName.trim()
+      : DEFAULTS.siteName;
+    res.json({ siteName });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // getAll stays open to both roles on purpose: partners need trackingDomain to
 // render their own tracking links. Writing it is what is restricted.
 exports.getAll = async (req, res, next) => {

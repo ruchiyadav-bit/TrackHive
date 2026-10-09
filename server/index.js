@@ -22,8 +22,21 @@ for (const envVar of requiredEnvVars) {
 const app = express();
 const PORT = process.env.PORT || 3050;
 
+// Identifies THIS running process. A tracking domain is only truly pointed
+// here when fetching /api/health over it returns this same value — DNS
+// resolving proves nothing about which deployment answers.
+global.__INSTANCE_ID = require('crypto').randomBytes(8).toString('hex');
+
 // Trust proxy — env-driven for Render (1), Nginx reverse proxy, etc.
 app.set('trust proxy', Number(process.env.TRUST_PROXY || 1));
+
+// Request timing and counters for the System Health page. Mounted HERE — ahead
+// of the public tracking routes below — on purpose: a redirect that has grown
+// slow is exactly the failure this is meant to catch, and those routes are
+// deliberately the ones with no other middleware on them. Cost per request is
+// one hrtime pair and one 'finish' listener.
+const serverMetrics = require('./utils/serverMetrics');
+app.use(serverMetrics.httpMetrics());
 
 // ── PUBLIC TRACKING ROUTES ──────────────────────────────────────────
 // Mounted FIRST — before body parsers, rate limiters, and any other
@@ -35,6 +48,10 @@ app.use('/go', smartLinkHandler);
 
 const clickHandler = require('./routes/click');
 app.use('/click', clickHandler);
+
+// Google Ads tracking template (separate from /click; trackscales.com only)
+const gclickHandler = require('./routes/gclick');
+app.use('/gclick', gclickHandler);
 
 const postbackHandler = require('./routes/postback');
 app.use('/postback', postbackHandler);
@@ -83,10 +100,14 @@ const templateRoutes = require('./routes/templates');
 const activityRoutes = require('./routes/activity');
 const offerGroupRoutes = require('./routes/offerGroups');
 const telegramRoutes = require('./routes/telegram');
+const emailRoutes = require('./routes/email');
 const smartLinksRoutes = require('./routes/smartLinks');
 const advertiserRoutes = require('./routes/advertisers');
 const trackingDomainRoutes = require('./routes/trackingDomains');
 const networkPresetRoutes = require('./routes/networkPresets');
+const adSpendRoutes = require('./routes/adSpend');
+const systemHealthRoutes = require('./routes/systemHealth');
+const googleTrackingRoutes = require('./routes/googleTracking');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/offers', offerRoutes);
@@ -99,10 +120,16 @@ app.use('/api/templates', templateRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/offer-groups', offerGroupRoutes);
 app.use('/api/telegram', telegramRoutes);
+app.use('/api/email', emailRoutes);
 app.use('/api/smart-links', smartLinksRoutes);
 app.use('/api/advertisers', advertiserRoutes);
 app.use('/api/tracking-domains', trackingDomainRoutes);
 app.use('/api/network-presets', networkPresetRoutes);
+app.use('/api/ad-spend', adSpendRoutes);
+// Read-only diagnostics for the System Health page. NOT under /api/health —
+// that path is the public probe the tracking-domain verifier fetches.
+app.use('/api/system-health', systemHealthRoutes);
+app.use('/api/google-tracking', googleTrackingRoutes);
 
 // Health check — includes the deployed git commit (Render sets RENDER_GIT_COMMIT
 // automatically on every deploy) so it's easy to confirm a push actually went
@@ -115,6 +142,7 @@ app.get('/api/health', (req, res) => {
     timestamp: Date.now(),
     mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     commit: process.env.RENDER_GIT_COMMIT || 'unknown',
+    instance: global.__INSTANCE_ID,
   });
 });
 
@@ -152,6 +180,18 @@ const startServer = async () => {
   // Seed the first manager on first run
   const { seedAdmin } = require('./utils/seedAdmin');
   await seedAdmin();
+
+  // One metrics sample a minute, into MongoDB. Started after the database is
+  // up because that is where the samples go; the timer is unref'd, so it can
+  // never be the reason the process refuses to exit.
+  serverMetrics.start();
+
+  // Uptime monitors + Telegram alerts. NOTE: this runs inside the app, so it
+  // cannot report that the app itself is gone — it catches a tracking domain
+  // whose DNS moved, an expired certificate, nginx refusing connections, a
+  // domain now answering from another deployment. "The whole box is down"
+  // needs a monitor OUTSIDE the box.
+  require('./utils/uptimeMonitor').start();
 
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);

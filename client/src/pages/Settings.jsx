@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Save, Users, Globe, Bell, Link2, Shield, MessageSquare, Send, CheckCircle, AlertCircle } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Users, Globe, Bell, Link2, Shield, MessageSquare, Mail, Send, CheckCircle, AlertCircle } from 'lucide-react';
 import api from '../api/client';
+import GoogleTrackingSettings from '../components/settings/GoogleTrackingSettings';
 import { useAuth } from '../hooks/useAuth';
-import { isManager } from '../utils/roles';
+import { useSiteSettings } from '../hooks/useSiteSettings';
+import { isManager, isTeam } from '../utils/roles';
+import { timezoneOptions } from '../utils/datetime';
 import { useToast } from '../components/ui/Toast';
 
 // managerOnly tabs are removed for partners. The Tracking tab holds the
@@ -16,9 +19,13 @@ const TABS = [
  { key: 'tracking', label: 'Tracking', icon: Link2, managerOnly: true },
  { key: 'notifications', label: 'Notifications', icon: Bell, managerOnly: true },
  { key: 'telegram', label: 'Telegram', icon: MessageSquare, managerOnly: true },
+ { key: 'email', label: 'Email', icon: Mail, managerOnly: true },
  { key: 'users', label: 'Users', icon: Users, managerOnly: true },
- { key: 'security', label: 'Security', icon: Shield },
+ // hideFromTeam: a team account is view-only end to end, so it has no
+ // password form of its own — a manager resets it from User Management.
+ { key: 'security', label: 'Security', icon: Shield, hideFromTeam: true },
 ];
+
 
 const ALERT_TYPES = [
  { key: 'cap_alert', label: 'Cap Alerts', desc: 'When offer caps are approaching or hit' },
@@ -30,8 +37,27 @@ const ALERT_TYPES = [
 ];
 
 export default function Settings() {
- const { user } = useAuth();
+ const { user, checkAuth } = useAuth();
+ const { refreshSiteSettings } = useSiteSettings();
  const toast = useToast();
+ // This user's OWN dashboard timezone ('' = account default). Stored on the
+ // user, not in account Settings, so it never changes anyone else's reports.
+ const [myTz, setMyTz] = useState(user?.ownTimezone || '');
+ const [savingTz, setSavingTz] = useState(false);
+ useEffect(() => { setMyTz(user?.ownTimezone || ''); }, [user?.ownTimezone]);
+
+ const saveMyTimezone = async () => {
+ setSavingTz(true);
+ try {
+ await api.put('/auth/me/timezone', { timezone: myTz || null });
+ await checkAuth();
+ toast.success('Dashboard timezone saved');
+ } catch (err) {
+ toast.error(err.response?.data?.error || 'Failed to save timezone');
+ } finally {
+ setSavingTz(false);
+ }
+ };
  const [tab, setTab] = useState('general');
  const [settings, setSettings] = useState({});
  const [users, setUsers] = useState([]);
@@ -44,6 +70,15 @@ export default function Settings() {
  });
  const [tgLoading, setTgLoading] = useState(false);
  const [tgTesting, setTgTesting] = useState(false);
+
+ // Email (SMTP) state
+ const [emSettings, setEmSettings] = useState({
+ enabled: false, host: '', port: 587, secure: false, user: '', pass: '',
+ from: '', to: '', alertTypes: [], isConfigured: false, available: true,
+ fromEnv: {},
+ });
+ const [emLoading, setEmLoading] = useState(false);
+ const [emTesting, setEmTesting] = useState(false);
 
  useEffect(() => {
  const fetch = async () => {
@@ -71,6 +106,12 @@ export default function Settings() {
  setTgSettings(r.data.settings || {});
  }).catch(() => {}).finally(() => setTgLoading(false));
  }
+ if (tab === 'email' && isManager(user)) {
+ setEmLoading(true);
+ api.get('/email').then(r => {
+ setEmSettings(r.data.settings || {});
+ }).catch(() => {}).finally(() => setEmLoading(false));
+ }
  }, [tab, user]);
 
  const updateSetting = (key, value) => {
@@ -81,6 +122,7 @@ export default function Settings() {
  setSaving(true);
  try {
  await api.put('/settings/bulk', { settings });
+ await refreshSiteSettings();
  toast.success('Settings saved successfully');
  } catch (err) {
  toast.error('Failed to save settings');
@@ -116,6 +158,39 @@ export default function Settings() {
  }
  };
 
+ const saveEmail = async () => {
+ setSaving(true);
+ try {
+ await api.put('/email', emSettings);
+ toast.success('Email settings saved');
+ } catch (err) {
+ toast.error(err.response?.data?.error || 'Failed to save email settings');
+ } finally {
+ setSaving(false);
+ }
+ };
+
+ const testEmail = async () => {
+ setEmTesting(true);
+ try {
+ await api.post('/email/test', emSettings);
+ toast.success('Test email sent! Check the inbox.');
+ } catch (err) {
+ toast.error(err.response?.data?.error || 'Failed to send test email');
+ } finally {
+ setEmTesting(false);
+ }
+ };
+
+ const toggleEmailAlertType = (type) => {
+ setEmSettings(prev => ({
+ ...prev,
+ alertTypes: (prev.alertTypes || []).includes(type)
+ ? prev.alertTypes.filter(t => t !== type)
+ : [...(prev.alertTypes || []), type],
+ }));
+ };
+
  const toggleAlertType = (type) => {
  setTgSettings(prev => ({
  ...prev,
@@ -126,7 +201,10 @@ export default function Settings() {
  };
 
  const isAdmin = isManager(user);
- const tabs = TABS.filter(t => !t.managerOnly || isAdmin);
+ const teamView = isTeam(user);
+ // A team member gets General and nothing else here; the tracking DOMAIN list
+ // they need is its own page (/settings/tracking-domains), not this tab.
+ const tabs = TABS.filter(t => (!t.managerOnly || isAdmin) && !(t.hideFromTeam && teamView));
 
  // A partner who was sitting on a manager-only tab when their role changed
  // would otherwise stay on a tab that no longer exists in the list.
@@ -140,7 +218,7 @@ export default function Settings() {
  <div>
  <div className="flex items-center justify-between mb-6">
  <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
- {isAdmin && activeTab !== 'telegram' && activeTab !== 'users' && activeTab !== 'security' && (
+ {isAdmin && activeTab !== 'telegram' && activeTab !== 'email' && activeTab !== 'users' && activeTab !== 'security' && (
  <button
  onClick={saveSettings}
  disabled={saving}
@@ -156,6 +234,15 @@ export default function Settings() {
  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
  >
  <Save size={16} /> {saving ? 'Saving...' : 'Save Telegram Settings'}
+ </button>
+ )}
+ {isAdmin && activeTab === 'email' && (
+ <button
+ onClick={saveEmail}
+ disabled={saving}
+ className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+ >
+ <Save size={16} /> {saving ? 'Saving...' : 'Save Email Settings'}
  </button>
  )}
  </div>
@@ -186,11 +273,49 @@ export default function Settings() {
  {activeTab === 'general' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <h2 className="text-lg font-semibold text-gray-900">General Settings</h2>
- <SettingField label="Site Name" value={settings.siteName || ''} onChange={v => updateSetting('siteName', v)} disabled={!isAdmin} />
+ <SettingField label="Website Name" value={settings.siteName || ''} onChange={v => updateSetting('siteName', v)} disabled={!isAdmin} />
  <SettingSelect label="Default Currency" value={settings.currency || 'USD'} onChange={v => updateSetting('currency', v)} disabled={!isAdmin}
  options={['USD', 'EUR', 'GBP', 'INR', 'AUD', 'CAD', 'BRL', 'NZD']} />
  <SettingSelect label="Default Timezone" value={settings.timezone || 'UTC'} onChange={v => updateSetting('timezone', v)} disabled={!isAdmin}
  options={['UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Asia/Kolkata', 'Asia/Tokyo']} />
+ {isAdmin && (
+ <p className="text-xs text-gray-400 -mt-3">Account default — used by anyone who has not picked their own dashboard timezone below.</p>
+ )}
+
+ <div className="border-t border-gray-100 pt-5">
+ <h3 className="text-sm font-semibold text-gray-900">My Dashboard Timezone</h3>
+ {teamView ? (
+ <p className="text-sm text-gray-600 mt-2">
+ Your dashboard and reports run in <strong>{user?.dashboardTimezone || 'UTC'}</strong>
+ {user?.teamOwnerName ? <> — set by <strong>{user.teamOwnerName}</strong></> : null}.
+ </p>
+ ) : (
+ <>
+ <p className="text-xs text-gray-500 mt-1 mb-3">
+ Days and hours on your dashboard, reports and ad spend are counted in this timezone.
+ Only your account {isAdmin ? '' : 'and your team '}use it — nobody else's reports change.
+ </p>
+ <div className="flex items-center gap-3 max-w-xl">
+ <select
+ value={myTz}
+ onChange={e => setMyTz(e.target.value)}
+ className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white text-gray-900"
+ >
+ <option value="">Account default ({user?.accountTimezone || settings.timezone || 'UTC'})</option>
+ {timezoneOptions().map(z => <option key={z} value={z}>{z}</option>)}
+ </select>
+ <button
+ onClick={saveMyTimezone}
+ disabled={savingTz || myTz === (user?.ownTimezone || '')}
+ className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+ >
+ <Save size={16} /> {savingTz ? 'Saving...' : 'Save'}
+ </button>
+ </div>
+ <p className="text-xs text-gray-400 mt-2">Now using: {user?.dashboardTimezone || 'UTC'}</p>
+ </>
+ )}
+ </div>
  </div>
  )}
 
@@ -210,10 +335,17 @@ export default function Settings() {
  </div>
  )}
 
+ {/* Separate from the settings above: saves on its own. */}
+ {activeTab === 'tracking' && isAdmin && <GoogleTrackingSettings />}
+
  {activeTab === 'notifications' && (
  <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
  <h2 className="text-lg font-semibold text-gray-900">Notification Settings</h2>
- <SettingToggle label="Email Notifications" value={settings.emailNotifications} onChange={v => updateSetting('emailNotifications', v)} disabled={!isAdmin} />
+ <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700">
+ Email alerts now live on their own <strong>Email</strong> tab, where the SMTP server is configured and
+ can be tested. The toggle that used to sit here only ever saved a value — nothing read it and no
+ mail was ever sent.
+ </div>
  <SettingField label="Cap Alert Threshold (%)" type="number" value={settings.capAlertThreshold ?? 90}
  onChange={v => updateSetting('capAlertThreshold', parseInt(v))} disabled={!isAdmin} />
  <SettingField label="Conversion Spike Multiplier" type="number" value={settings.conversionSpikeMultiplier ?? 3}
@@ -296,6 +428,165 @@ export default function Settings() {
  type="checkbox"
  checked={tgSettings.alertTypes.includes(at.key)}
  onChange={() => toggleAlertType(at.key)}
+ disabled={!isAdmin}
+ className="mt-0.5 rounded text-blue-600"
+ />
+ <div>
+ <span className="text-sm font-medium text-gray-700">{at.label}</span>
+ <p className="text-xs text-gray-400">{at.desc}</p>
+ </div>
+ </label>
+ ))}
+ </div>
+ </div>
+ </div>
+ )}
+
+ {activeTab === 'email' && (
+ <div className="space-y-4">
+ <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+ <div className="flex items-center justify-between">
+ <div>
+ <h2 className="text-lg font-semibold text-gray-900">Email Alerts (SMTP)</h2>
+ <p className="text-sm text-gray-500 mt-1">The same alerts as Telegram, delivered to an inbox</p>
+ </div>
+ {emSettings.isConfigured && (
+ <span className="flex items-center gap-1 text-xs text-green-600 bg-green-50 px-2 py-1 rounded-full">
+ <CheckCircle size={12} /> Configured
+ </span>
+ )}
+ </div>
+
+ {emLoading ? (
+ <div className="text-sm text-gray-400">Loading email settings...</div>
+ ) : (
+ <>
+ {!emSettings.available && (
+ <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex gap-2">
+ <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+ <p className="text-sm text-amber-800">
+ <strong>nodemailer is not installed on the server.</strong> Run{' '}
+ <code className="bg-amber-100 px-1 rounded">npm install</code> in the server folder and restart,
+ or nothing here can send.
+ </p>
+ </div>
+ )}
+
+ <SettingToggle
+ label="Enable Email Alerts"
+ value={emSettings.enabled}
+ onChange={v => setEmSettings(prev => ({ ...prev, enabled: v }))}
+ disabled={!isAdmin}
+ />
+
+ <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+ <p className="text-sm text-blue-700">
+ <strong>Setup:</strong> any SMTP provider works — Gmail, Brevo, Resend, Amazon SES, your own mail
+ server. For Gmail you need an <em>App Password</em>, not the account password.
+ Port 465 means implicit TLS; 587 means STARTTLS.
+ </p>
+ <p className="text-xs text-blue-600 mt-2">
+ Prefer keeping credentials out of the database? Set{' '}
+ <code className="bg-blue-100 px-1 rounded">SMTP_HOST</code>,{' '}
+ <code className="bg-blue-100 px-1 rounded">SMTP_PORT</code>,{' '}
+ <code className="bg-blue-100 px-1 rounded">SMTP_USER</code>,{' '}
+ <code className="bg-blue-100 px-1 rounded">SMTP_PASS</code>,{' '}
+ <code className="bg-blue-100 px-1 rounded">EMAIL_FROM</code>,{' '}
+ <code className="bg-blue-100 px-1 rounded">EMAIL_TO</code> in .env — those win over anything typed here.
+ </p>
+ </div>
+
+ <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+ <div className="md:col-span-2">
+ <SettingField
+ label="SMTP Host"
+ value={emSettings.host || ''}
+ onChange={v => setEmSettings(prev => ({ ...prev, host: v }))}
+ disabled={!isAdmin || emSettings.fromEnv?.host}
+ placeholder="smtp.gmail.com"
+ hint={emSettings.fromEnv?.host ? 'Set in .env — edit it there' : undefined}
+ />
+ </div>
+ <SettingField
+ label="Port"
+ type="number"
+ value={emSettings.port ?? 587}
+ onChange={v => setEmSettings(prev => ({ ...prev, port: parseInt(v) || 587 }))}
+ disabled={!isAdmin}
+ />
+ </div>
+
+ <SettingToggle
+ label="Use implicit TLS (port 465)"
+ value={emSettings.secure}
+ onChange={v => setEmSettings(prev => ({ ...prev, secure: v }))}
+ disabled={!isAdmin}
+ />
+
+ <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+ <SettingField
+ label="SMTP Username"
+ value={emSettings.user || ''}
+ onChange={v => setEmSettings(prev => ({ ...prev, user: v }))}
+ disabled={!isAdmin || emSettings.fromEnv?.user}
+ placeholder="alerts@yourdomain.com"
+ />
+ <SettingField
+ label="SMTP Password"
+ value={emSettings.pass || ''}
+ onChange={v => setEmSettings(prev => ({ ...prev, pass: v }))}
+ disabled={!isAdmin || emSettings.fromEnv?.pass}
+ placeholder={emSettings.pass ? 'Saved — type to replace' : 'App password'}
+ hint={emSettings.fromEnv?.pass ? 'Set in .env — edit it there' : 'Stored on the server; never sent back to this page'}
+ />
+ </div>
+
+ <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+ <SettingField
+ label="From Address"
+ value={emSettings.from || ''}
+ onChange={v => setEmSettings(prev => ({ ...prev, from: v }))}
+ disabled={!isAdmin}
+ placeholder="Alerts <alerts@yourdomain.com>"
+ hint="Most providers insist this matches the login address"
+ />
+ <SettingField
+ label="Send Alerts To"
+ value={emSettings.to || ''}
+ onChange={v => setEmSettings(prev => ({ ...prev, to: v }))}
+ disabled={!isAdmin}
+ placeholder="you@yourdomain.com, ops@yourdomain.com"
+ hint="Several addresses, comma separated"
+ />
+ </div>
+
+ {isAdmin && (
+ <button
+ onClick={testEmail}
+ disabled={emTesting || !emSettings.host || !emSettings.to}
+ className="flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 disabled:opacity-50"
+ >
+ <Send size={14} /> {emTesting ? 'Sending...' : 'Send Test Email'}
+ </button>
+ )}
+ </>
+ )}
+ </div>
+
+ <div className="bg-white rounded-xl border border-gray-200 p-6">
+ <h3 className="text-sm font-semibold text-gray-900 mb-3">Alert Types</h3>
+ <p className="text-xs text-gray-500 mb-4">
+ Which notifications go to email. Leave all unchecked to receive every type.
+ Uptime down/recovery alerts ignore this list on purpose — an outage alert somebody filtered out
+ is worse than no monitoring.
+ </p>
+ <div className="space-y-3">
+ {ALERT_TYPES.map(at => (
+ <label key={at.key} className="flex items-start gap-3 cursor-pointer">
+ <input
+ type="checkbox"
+ checked={(emSettings.alertTypes || []).includes(at.key)}
+ onChange={() => toggleEmailAlertType(at.key)}
  disabled={!isAdmin}
  className="mt-0.5 rounded text-blue-600"
  />

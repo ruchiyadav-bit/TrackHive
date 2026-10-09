@@ -5,6 +5,10 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import api from '../api/client';
 import { formatCurrency, formatNumber } from '../utils/formatCurrency';
 import { CardSkeleton } from '../components/ui/Skeleton';
+import { fmtTime, dashboardToday, dashboardDaysAgo, dashboardMonthRange } from '../utils/datetime';
+import { useAuth } from '../hooks/useAuth';
+import { isTeam } from '../utils/roles';
+import PnlBadge from '../components/reports/PnlBadge';
 
 const REFRESH_INTERVAL = 30000;
 
@@ -14,21 +18,30 @@ export default function Dashboard() {
  const [topOffers, setTopOffers] = useState([]);
  const [recentClicks, setRecentClicks] = useState([]);
  const [geoData, setGeoData] = useState([]);
+ // Account reporting timezone, as returned with the recent-clicks response.
+ const [timezone, setTimezone] = useState('');
+ const { user } = useAuth();
+ // The server has already deleted revenue/payout/profit from every dashboard
+ // response for this role. Rendering the money cards anyway would print
+ // "$0.00" everywhere, which reads as "we earned nothing" rather than "you
+ // cannot see this" — so they are swapped for the profit/loss badge instead.
+ const teamView = isTeam(user);
  const [loading, setLoading] = useState(true);
  const [dateRange, setDateRange] = useState('30d');
  const [lastRefresh, setLastRefresh] = useState(null);
 
+ // Dates in the user's dashboard timezone — the same days the server uses.
  const getDateRange = useCallback(() => {
- const to = new Date().toISOString().split('T')[0];
- const from = new Date();
+ const to = dashboardToday();
  switch (dateRange) {
- case '7d': from.setDate(from.getDate() - 7); break;
- case '14d': from.setDate(from.getDate() - 14); break;
- case '90d': from.setDate(from.getDate() - 90); break;
+ case '7d': return { from: dashboardDaysAgo(7), to };
+ case '14d': return { from: dashboardDaysAgo(14), to };
+ case '90d': return { from: dashboardDaysAgo(90), to };
  case 'today': return { from: to, to };
- default: from.setDate(from.getDate() - 30);
+ case 'thisMonth': { const [f, t] = dashboardMonthRange(0); return { from: f, to: t }; }
+ case 'lastMonth': { const [f, t] = dashboardMonthRange(-1); return { from: f, to: t }; }
+ default: return { from: dashboardDaysAgo(30), to };
  }
- return { from: from.toISOString().split('T')[0], to };
  }, [dateRange]);
 
  const fetchData = useCallback(async () => {
@@ -45,6 +58,7 @@ export default function Dashboard() {
  setChartData(chartRes.data.data);
  setTopOffers(topRes.data.offers);
  setRecentClicks(clickRes.data.clicks);
+ setTimezone(clickRes.data.timezone || '');
  setGeoData(geoRes.data.data?.slice(0, 10) || []);
  setLastRefresh(new Date());
  } catch (err) {
@@ -82,7 +96,9 @@ export default function Dashboard() {
  { label: 'Total Offers', value: formatNumber(summary?.totalOffers || 0), sub: `${summary?.activeOffers || 0} active`, icon: BarChart3, color: 'bg-blue-500' },
  { label: 'Clicks', value: formatNumber(today.clicks || 0), sub: `${formatNumber(allTime.totalClicks || 0)} all time`, icon: MousePointerClick, color: 'bg-green-500' },
  { label: 'Conversions', value: formatNumber(today.conversions || 0), sub: `${formatNumber(allTime.totalConversions || 0)} all time`, icon: TrendingUp, color: 'bg-purple-500' },
- { label: 'Revenue', value: formatCurrency(today.revenue || 0), sub: `${formatCurrency(allTime.totalRevenue || 0)} all time`, icon: DollarSign, color: 'bg-amber-500' },
+ teamView
+ ? { label: 'Performance', node: <PnlBadge status={today.pnlStatus} label={today.pnlLabel} size="lg" />, sub: 'today', icon: DollarSign, color: 'bg-amber-500' }
+ : { label: 'Revenue', value: formatCurrency(today.revenue || 0), sub: `${formatCurrency(allTime.totalRevenue || 0)} all time`, icon: DollarSign, color: 'bg-amber-500' },
  ];
 
  const chartFormatted = chartData.map(d => ({
@@ -105,6 +121,8 @@ export default function Dashboard() {
  <option value="14d">Last 14 days</option>
  <option value="30d">Last 30 days</option>
  <option value="90d">Last 90 days</option>
+ <option value="thisMonth">This Month</option>
+ <option value="lastMonth">Last Month</option>
  </select>
  <button onClick={fetchData} className="p-2 rounded-lg hover:bg-gray-100 text-gray-500" title="Refresh">
  <RefreshCw size={16} />
@@ -129,7 +147,7 @@ export default function Dashboard() {
  </div>
  <div>
  <div className="text-sm text-gray-500">{stat.label}</div>
- <div className="text-2xl font-bold text-gray-900">{stat.value}</div>
+ <div className="text-2xl font-bold text-gray-900">{stat.node ?? stat.value}</div>
  <div className="text-xs text-gray-400">{stat.sub}</div>
  </div>
  </div>
@@ -255,11 +273,17 @@ export default function Dashboard() {
  <div className="text-xs text-gray-400">{formatNumber(o.clicks)} clicks &middot; {o.conversions} conv</div>
  </div>
  <div className="text-right">
+ {teamView ? (
+ <PnlBadge status={o.pnlStatus} label={o.pnlLabel} />
+ ) : (
+ <>
  <div className="text-sm font-bold text-gray-900">{formatCurrency(o.revenue)}</div>
  <div className={`text-xs font-medium ${o.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
  {o.profit >= 0 ? <ArrowUpRight size={10} className="inline" /> : <ArrowDownRight size={10} className="inline" />}
  {formatCurrency(Math.abs(o.profit))}
  </div>
+ </>
+ )}
  </div>
  </div>
  ))}
@@ -280,9 +304,10 @@ export default function Dashboard() {
  <span className="font-medium text-gray-700 truncate flex-1">{c.offerName}</span>
  <span className="text-gray-400">{c.country}</span>
  <span className="text-gray-400">{c.device}</span>
- {c.converted && <span className="text-green-600 font-medium">{formatCurrency(c.revenue)}</span>}
+ {c.converted && !teamView && <span className="text-green-600 font-medium">{formatCurrency(c.revenue)}</span>}
+ {c.converted && teamView && <span className="text-green-600 font-medium">conv</span>}
  <span className="text-gray-300 w-14 text-right">
- {new Date(c.clickedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+ {fmtTime(c.clickedAt, timezone)}
  </span>
  </div>
  ))}

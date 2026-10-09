@@ -34,6 +34,9 @@ const offerSchema = new mongoose.Schema(
 
     // Step 2: Tracking
     landingPageUrl: String,
+    // Optional: your own landing page for Google Ads traffic (Final URL). /gclick
+    // only sends to this page's domain. Empty = offer not set up for Google.
+    googleLandingUrl: { type: String, default: '' },
     trackingDomain: { type: mongoose.Schema.Types.ObjectId, ref: 'TrackingDomain' },
     linkingType: { type: String, enum: ['redirect', 'direct'], default: 'redirect' },
     conversionTrackingMethod: {

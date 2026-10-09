@@ -25,6 +25,34 @@ function norm(s) {
 }
 
 /**
+ * Browser FAMILY, so a targeting chip matches every variant UAParser reports.
+ *
+ * The offer wizard offers 'Safari' / 'Chrome' / 'Samsung Internet', but UAParser
+ * names the phone builds differently: an iPhone is 'Mobile Safari', Android
+ * Firefox is 'Mobile Firefox', an in-app Android browser is 'Chrome WebView',
+ * Samsung's is 'Samsung Browser'. Comparing raw names blocked every iPhone on an
+ * offer targeted "Mobile + Safari" with blockReason 'device'.
+ */
+function browserFamily(name) {
+  let b = norm(name);
+  b = b.replace(/^mobile\s+/, '').replace(/\s+(webview|mobile|mobi|mini|touch)$/, '');
+  if (b === 'samsung browser') return 'samsung internet';
+  if (b === 'edge chromium') return 'edge';
+  return b;
+}
+
+/** OS family: UAParser says 'Mac OS' / 'Chromium OS', the wizard 'macOS' / 'Chrome OS'. */
+function osFamily(name) {
+  const o = norm(name);
+  if (o === 'mac os' || o === 'macos' || o === 'mac os x') return 'macos';
+  if (o === 'chromium os' || o === 'chrome os') return 'chrome os';
+  return o;
+}
+
+exports.browserFamily = browserFamily;
+exports.osFamily = osFamily;
+
+/**
  * Device/OS/Browser targeting (Offer Step 5). Case-insensitive — UAParser
  * returns values like 'Android'/'Windows' while the wizard may store
  * lowercase strings. An empty array on any dimension means no restriction
@@ -34,10 +62,10 @@ exports.checkDeviceTarget = (offer, visitor) => {
   if (offer.deviceTypes?.length && !offer.deviceTypes.map(norm).includes(norm(visitor.device))) {
     return false;
   }
-  if (offer.operatingSystems?.length && !offer.operatingSystems.map(norm).includes(norm(visitor.os))) {
+  if (offer.operatingSystems?.length && !offer.operatingSystems.map(osFamily).includes(osFamily(visitor.os))) {
     return false;
   }
-  if (offer.browsers?.length && !offer.browsers.map(norm).includes(norm(visitor.browser))) {
+  if (offer.browsers?.length && !offer.browsers.map(browserFamily).includes(browserFamily(visitor.browser))) {
     return false;
   }
   return true;

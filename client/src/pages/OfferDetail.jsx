@@ -6,6 +6,9 @@ import {
  DollarSign, Link2, Check, Zap,
 } from 'lucide-react';
 import api from '../api/client';
+import { useAuth } from '../hooks/useAuth';
+import { isReadOnly } from '../utils/roles';
+import { PROFIT_TRACKING } from '../utils/reportConfig';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber, formatPercent } from '../utils/formatCurrency';
 import { countryName } from '../utils/countries';
@@ -95,9 +98,66 @@ function StatCard({ label, value, sub, color = 'gray' }) {
  );
 }
 
+// ---- Google Ads (separate from the normal tracking above) ----
+
+/**
+ * Google Ads setup for this offer: the ONE Google tracking domain (managed in
+ * Settings > Tracking), the tracking template, the Final URL and the button
+ * link for the landing page. Only the Google domain is offered here; the
+ * normal tracking domains are never used for /gclick.
+ */
+function GoogleAdsSection({ offer, clickUrl }) {
+ const [googleDomain, setGoogleDomain] = useState(null);
+ useEffect(() => {
+ api.get('/google-tracking')
+ .then(({ data }) => setGoogleDomain(data.domain || ''))
+ .catch(() => setGoogleDomain(''));
+ }, []);
+
+ const template = googleDomain
+ ? `https://${googleDomain}/gclick?offer_id=${offer._id}&url={lpurl}`
+ : '';
+
+ return (
+ <Section title="Google Ads" icon={Globe} defaultOpen={false}>
+ <div className="mt-3 space-y-3">
+ <div>
+ <span className="text-xs text-gray-500 uppercase tracking-wide block mb-1">Google Tracking Domain</span>
+ <select disabled={!googleDomain} value={googleDomain || ''} onChange={() => {}}
+ className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white text-gray-900 min-w-[240px]">
+ {googleDomain
+ ? <option value={googleDomain}>{googleDomain}</option>
+ : <option value="">{googleDomain === null ? 'Loading...' : 'Not set: manager sets it in Settings > Tracking'}</option>}
+ </select>
+ </div>
+ {googleDomain && (
+ <>
+ <CopyField label="1. Tracking template (Google Ads > Campaign settings > Tracking template)" value={template} />
+ {offer.googleLandingUrl
+ ? <CopyField label="2. Final URL (Google Ads ad) = your landing page" value={offer.googleLandingUrl} />
+ : (
+ <p className="text-xs text-amber-600">
+ 2. Final URL: set "Google Ads Landing Page (your site)" in Edit Offer first. Without it /gclick only allows the offer's own landing domain.
+ </p>
+ )}
+ <CopyField label="3. Button link on your landing page (normal tracking, affiliate gets the click)" value={clickUrl} />
+ <p className="text-xs text-gray-500">
+ Flow: Google ad &rarr; {googleDomain} &rarr; your landing page &rarr; button &rarr; normal tracking link &rarr; network &rarr; merchant.
+ Use this only after the Google certification for {googleDomain} is approved.
+ </p>
+ </>
+ )}
+ </div>
+ </Section>
+ );
+}
+
 // ---- Main Component ----
 
 export default function OfferDetail() {
+ const { user } = useAuth();
+ // Read-only accounts open an offer to read its setup, not to change it.
+ const canEdit = !isReadOnly(user);
  const { id } = useParams();
  const navigate = useNavigate();
  const [offer, setOffer] = useState(null);
@@ -169,7 +229,7 @@ export default function OfferDetail() {
  // showing the offer's domain here would hand out a URL that does not match it.
  const advObj = typeof offer.advertiser === 'object' ? offer.advertiser : null;
  const postbackBase = toBaseUrl(resolveAdvertiserDomain(advObj, settings, []) || trackingDomain);
- const postbackUrl = buildPostbackUrl({ trackingDomain: postbackBase, preset, secret: advSecret });
+ const postbackUrl = buildPostbackUrl({ trackingDomain: postbackBase, preset, secret: advSecret, clickIdParam: advObj?.clickIdParam });
 
  // Stats
  const cvr = offer.totalClicks > 0 ? (offer.totalConversions / offer.totalClicks) * 100 : 0;
@@ -194,6 +254,7 @@ export default function OfferDetail() {
  <span className={`px-3 py-1 rounded-full text-xs font-medium ${statusColors[offer.status] || ''}`}>
  {offer.status}
  </span>
+ {canEdit && (
  <div className="flex items-center gap-1 ml-2">
  <Link to={`/offers/${id}/edit`}
  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
@@ -206,18 +267,24 @@ export default function OfferDetail() {
  <Trash2 size={16} />
  </button>
  </div>
+ )}
  </div>
 
  {/* Stats Bar */}
  <div className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
- <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+ {/* Revenue and Payout are the raw figures the network sent, so they stay.
+ Profit is derived from both and is wrong while old and new rows carry
+ different mappings — see utils/reportConfig.js. */}
+ <div className={`grid grid-cols-2 gap-4 ${PROFIT_TRACKING ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
  <StatCard label="Clicks" value={formatNumber(offer.totalClicks || 0)} />
  <StatCard label="Conversions" value={formatNumber(offer.totalConversions || 0)} />
  <StatCard label="CVR" value={formatPercent(cvr)} />
  <StatCard label="Revenue" value={formatCurrency(offer.totalRevenue, offer.currency)} />
  <StatCard label="Payout" value={formatCurrency(offer.totalPayout, offer.currency)} />
+ {PROFIT_TRACKING && (
  <StatCard label="Profit" value={formatCurrency(offer.totalProfit, offer.currency)}
  color={offer.totalProfit >= 0 ? 'green' : 'red'} sub={margin ? `${margin.toFixed(1)}% margin` : undefined} />
+ )}
  </div>
  </div>
 
@@ -338,6 +405,9 @@ export default function OfferDetail() {
  </div>
  </div>
  </Section>
+
+ {/* Google Ads: separate from the normal tracking above */}
+ <GoogleAdsSection offer={offer} clickUrl={clickUrl} />
 
  {/* Revenue & Payout Configuration */}
  <Section title="Revenue & Payout" icon={DollarSign}>

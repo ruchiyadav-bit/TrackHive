@@ -7,6 +7,11 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import api from '../../api/client';
+import { useAuth } from '../../hooks/useAuth';
+import { isTeam } from '../../utils/roles';
+import { dashboardToday, dashboardDaysAgo, dashboardMonthRange } from '../../utils/datetime';
+import PnlBadge from './PnlBadge';
+import { withoutDeadMoneyColumns, withoutDeadMoneyCards } from '../../utils/reportConfig';
 
 // ─── Format Helpers ─────────────────────────────────────────────────────────
 
@@ -14,6 +19,18 @@ export function fmtCurrency(v) {
   const n = Number(v);
   if (isNaN(n)) return '$0.00';
   return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
+ * Currency for per-click figures. CPC/RPC are often fractions of a cent at
+ * this traffic volume, where a flat 2-decimal format collapses $0.0122 to
+ * $0.01 — so anything under $1 gets 4 decimals instead.
+ */
+export function fmtCurrencyPrecise(v) {
+  const n = Number(v);
+  if (isNaN(n)) return '$0.00';
+  const digits = Math.abs(n) > 0 && Math.abs(n) < 1 ? 4 : 2;
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 export function fmtNumber(v) {
@@ -36,14 +53,14 @@ export function fmtPercent(v) {
 
 // ─── Date helpers ───────────────────────────────────────────────────────────
 
+// In the user's dashboard timezone (see utils/datetime), so "Today" is the
+// same day the server buckets the report in — not UTC's today.
 export function todayStr() {
-  return new Date().toISOString().split('T')[0];
+  return dashboardToday();
 }
 
 export function daysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split('T')[0];
+  return dashboardDaysAgo(n);
 }
 
 /**
@@ -56,6 +73,8 @@ const DATE_RANGES = [
   { key: 'yesterday', label: 'Yesterday',   range: () => [daysAgo(1), daysAgo(1)] },
   { key: 'last2',     label: 'Last 2 days', range: () => [daysAgo(1), todayStr()] },
   { key: 'last7',     label: 'Last 7 days', range: () => [daysAgo(6), todayStr()] },
+  { key: 'thisMonth', label: 'This Month',  range: () => dashboardMonthRange(0) },
+  { key: 'lastMonth', label: 'Last Month',  range: () => dashboardMonthRange(-1) },
   { key: 'custom',    label: 'Custom',      range: null },
 ];
 
@@ -67,11 +86,11 @@ function matchRange(from, to) {
 
 // ─── Summary Card ───────────────────────────────────────────────────────────
 
-function SummaryCard({ label, value, sub, color }) {
+function SummaryCard({ label, value, node, sub, color }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 px-4 py-3">
       <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className={`text-lg font-semibold ${color || 'text-gray-900'}`}>{value}</div>
+      <div className={`text-lg font-semibold ${color || 'text-gray-900'}`}>{node ?? value}</div>
       {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
     </div>
   );
@@ -79,10 +98,25 @@ function SummaryCard({ label, value, sub, color }) {
 
 // ─── Summary Cards Grid ─────────────────────────────────────────────────────
 
-function SummaryCards({ summary, collapsed, onToggle }) {
+function SummaryCards({ summary, collapsed, onToggle, teamView, fields }) {
   if (!summary) return null;
 
-  const cards = [
+  // A team member's summary literally has no revenue/payout/profit in it —
+  // the server deleted them. Rendering the money cards anyway would print a
+  // row of "$0.00", which reads as "we earned nothing", not "you can't see
+  // this". So the money half is replaced by the one status card instead.
+  const cards = teamView
+    ? [
+        fields.grossClicks && { label: 'Gross Clicks', value: fmtNumber(summary.grossClicks) },
+        fields.clicks && { label: 'Clicks', value: fmtNumber(summary.clicks) },
+        fields.uniqueClicks && { label: 'Unique', value: fmtNumber(summary.uniqueClicks) },
+        fields.dupClicks && { label: 'Dup', value: fmtNumber(summary.dupClicks), color: 'text-amber-600' },
+        fields.invalidClicks && { label: 'Invalid', value: fmtNumber(summary.invalidClicks), color: 'text-red-600' },
+        fields.conversions && { label: 'Conversions', value: fmtNumber(summary.cv) },
+        fields.cvr && { label: 'CVR', value: fmtPercent(summary.cvr) },
+        fields.status && { label: 'Performance', node: <PnlBadge status={summary.pnlStatus} label={summary.pnlLabel} size="lg" /> },
+      ].filter(Boolean)
+    : withoutDeadMoneyCards([
     { label: 'Gross Clicks', value: fmtNumber(summary.grossClicks) },
     { label: 'Clicks', value: fmtNumber(summary.clicks) },
     { label: 'Unique', value: fmtNumber(summary.uniqueClicks) },
@@ -93,12 +127,12 @@ function SummaryCards({ summary, collapsed, onToggle }) {
     { label: 'Revenue', value: fmtCurrency(summary.revenue), color: 'text-blue-600' },
     { label: 'Payout', value: fmtCurrency(summary.payout) },
     { label: 'Profit', value: fmtCurrency(summary.profit), color: Number(summary.profit) >= 0 ? 'text-green-600' : 'text-red-600' },
-    { label: 'CPC', value: fmtCurrency(summary.cpc) },
+    { label: 'CPC', value: fmtCurrencyPrecise(summary.cpc) },
     { label: 'CPA', value: fmtCurrency(summary.cpa) },
-    { label: 'RPC', value: fmtCurrency(summary.rpc) },
+    { label: 'RPC', value: fmtCurrencyPrecise(summary.rpc) },
     { label: 'RPA', value: fmtCurrency(summary.rpa) },
     { label: 'Margin', value: fmtPercent(summary.margin) },
-  ];
+  ]);
 
   return (
     <div className="mb-4">
@@ -219,6 +253,10 @@ export default function ReportShell({
   title,
   breadcrumb = 'Reports',
   columns,
+  // The same report with the money taken out. Rendered instead of `columns`
+  // for a team member; pages that have no team view simply omit it and fall
+  // back to `columns` (the server has already stripped the money either way).
+  teamColumns,
   endpoint,
   defaultSort = '',
   // 0 = today only. Reports open on today's data instead of an empty
@@ -232,6 +270,9 @@ export default function ReportShell({
   // > 0 turns on silent background polling (used by the click log)
   autoRefreshMs = 0,
 }) {
+  const { user } = useAuth();
+  const teamView = isTeam(user);
+
   // State
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -247,6 +288,8 @@ export default function ReportShell({
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [chartCollapsed, setChartCollapsed] = useState(true); // default CLOSED
   const [searchText, setSearchText] = useState('');
+  // Click ID search, on every report (sent as click_id, prefix match).
+  const [clickIdSearch, setClickIdSearch] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(autoRefreshMs > 0);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [rangeKey, setRangeKey] = useState(() => matchRange(daysAgo(defaultDays), todayStr()));
@@ -258,6 +301,19 @@ export default function ReportShell({
       .then(r => setOffers(r.data.offers || []))
       .catch(() => {});
   }
+
+  /**
+   * Which columns to actually draw.
+   *
+   * The server is the authority on what this person may see, and it says so in
+   * the response (`teamReportFields`). Filtering on that rather than on a
+   * client-side copy means a manager flipping a toggle takes effect on the
+   * team member's next Run Report, with no stale local rule to drift out of
+   * step with what the API is willing to return.
+   */
+  const fields = data?.teamReportFields || {};
+  const activeColumns = withoutDeadMoneyColumns(teamView && teamColumns ? teamColumns : columns)
+    .filter(c => !teamView || !c.field || fields[c.field] !== false);
 
   // extraParams is a fresh object literal on every parent render, so it can't
   // be a hook dependency directly — it would retrigger forever. Key on its
@@ -272,6 +328,7 @@ export default function ReportShell({
       const params = { from, to, page: p, sort: sortKey, ...extraParams };
       if (offerId) params.offer_id = offerId;
       if (searchText) params.search = searchText;
+      if (clickIdSearch.trim()) params.click_id = clickIdSearch.trim();
       const res = await api.get(endpoint, { params });
       setData(res.data);
       setPage(p);
@@ -285,7 +342,7 @@ export default function ReportShell({
       if (!silent) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, offerId, sortKey, endpoint, extraKey, searchText]);
+  }, [from, to, offerId, sortKey, endpoint, extraKey, searchText, clickIdSearch]);
 
   const handleRun = () => fetchReport(1);
   const handlePageChange = (newPage) => fetchReport(newPage);
@@ -374,6 +431,7 @@ export default function ReportShell({
       const type = endpoint.split('/').pop(); // 'conversion', 'offer', etc.
       const params = { from, to, type };
       if (offerId) params.offer_id = offerId;
+      if (clickIdSearch.trim()) params.click_id = clickIdSearch.trim();
       const res = await api.get('/reports/export', { params, responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
@@ -490,6 +548,18 @@ export default function ReportShell({
             </select>
           </div>
 
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-gray-400 font-medium mb-1">Click ID</label>
+            <input
+              type="text"
+              value={clickIdSearch}
+              onChange={e => setClickIdSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleRun(); }}
+              placeholder="Search click id..."
+              className="px-2.5 py-1.5 border border-gray-300 rounded-md text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white text-gray-900 w-[200px] font-mono"
+            />
+          </div>
+
           {rangeKey !== 'custom' && (
             <div className="text-[11px] text-gray-400 pb-1.5">
               {from === to ? from : `${from} → ${to}`}
@@ -534,6 +604,8 @@ export default function ReportShell({
             summary={data.summary}
             collapsed={summaryCollapsed}
             onToggle={() => setSummaryCollapsed(!summaryCollapsed)}
+            teamView={teamView}
+            fields={fields}
           />
 
           {/* Chart */}
@@ -559,7 +631,7 @@ export default function ReportShell({
                     <thead>
                       <tr className="bg-gray-50 border-b border-gray-200">
                         {renderExpandRow && <th className="w-8 px-2 py-2.5" />}
-                        {columns.map(col => (
+                        {activeColumns.map(col => (
                           <th
                             key={col.key}
                             onClick={() => col.sortable !== false && handleSort(col.key)}
@@ -593,12 +665,12 @@ export default function ReportShell({
                                 ) : null}
                               </td>
                             )}
-                            {columns.map(col => (
+                            {activeColumns.map(col => (
                               <td
                                 key={col.key}
                                 className={`px-3 py-2 whitespace-nowrap ${col.align === 'left' ? 'text-left' : 'text-right'} ${col.className || ''}`}
                               >
-                                {renderCell ? renderCell(row, col.key) : (
+                                {renderCell ? renderCell(row, col.key, data.timezone) : (
                                   <span className="text-gray-700">{String(row[col.key] ?? '—')}</span>
                                 )}
                               </td>
@@ -606,7 +678,7 @@ export default function ReportShell({
                           </tr>
                           {renderExpandRow && expandedRows.has(idx) && row.expand && (
                             <tr key={`exp-${idx}`}>
-                              <td colSpan={columns.length + 1} className="bg-gray-50/50 p-0">
+                              <td colSpan={activeColumns.length + 1} className="bg-gray-50/50 p-0">
                                 {renderExpandRow(row)}
                               </td>
                             </tr>

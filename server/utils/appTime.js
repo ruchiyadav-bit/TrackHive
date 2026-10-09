@@ -8,7 +8,8 @@
  *
  * TrackHive now does the same:
  *   - Click.clickedAt / conversionAt stay in UTC (unchanged)
- *   - reports resolve a timezone per request: ?timezone=... → Settings.timezone → UTC
+ *   - reports resolve a timezone per request:
+ *       ?timezone=... → the user's own dashboard timezone → Settings.timezone → UTC
  *   - day buckets are produced with $dateToString({ timezone }) at query time
  *
  * Because nothing is baked into stored data, the timezone can be changed at any
@@ -17,6 +18,7 @@
  */
 
 const Setting = require('../models/Setting');
+const { isTeam } = require('../config/roles');
 
 const DEFAULT_TZ = 'UTC';
 const CACHE_TTL_MS = 60_000;
@@ -56,12 +58,32 @@ function clearTimezoneCache() {
 }
 
 /**
- * Resolve the timezone for one request: explicit ?timezone= wins, then the
- * account default. Mirrors Everflow's per-request timezone_id → network default.
+ * The dashboard timezone chosen by this user, or null for "account default".
+ *
+ * A team member never has its own: it reads its OWNER's (loaded onto
+ * req.teamOwner by middleware/auth.js), so a partner and the team that
+ * partner created always see the same days. Each partner's choice lives on
+ * that partner's own User document, so one partner switching zones can never
+ * move another partner's numbers.
+ */
+function userTimezone(req) {
+  const user = req?.user;
+  if (!user) return null;
+  const tz = isTeam(user) ? req.teamOwner?.timezone : user.timezone;
+  return isValidTimezone(tz) ? tz : null;
+}
+
+/**
+ * Resolve the timezone for one request:
+ *   explicit ?timezone=  →  the user's own dashboard timezone (owner's, for a
+ *   team member)  →  the account default (Settings → timezone)  →  UTC.
+ * Mirrors Everflow's per-request timezone_id → user → network default.
  */
 async function resolveTimezone(req) {
   const requested = req?.query?.timezone;
   if (isValidTimezone(requested)) return requested;
+  const own = userTimezone(req);
+  if (own) return own;
   return getReportTimezone();
 }
 
@@ -125,6 +147,7 @@ module.exports = {
   getReportTimezone,
   clearTimezoneCache,
   resolveTimezone,
+  userTimezone,
   zonedStartOfDayUtc,
   zonedEndOfDayUtc,
   todayInTz,

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import ReportShell, { StatusBadge, fmtCurrency, daysAgo, todayStr } from '../components/reports/ReportShell';
+import { fmtDateTime } from '../utils/datetime';
+import PnlBadge from '../components/reports/PnlBadge';
 
 const COLUMNS = [
   { key: 'clickedAt', label: 'Timestamp', align: 'left', sortable: true },
@@ -20,10 +22,38 @@ const COLUMNS = [
   { key: 'profit', label: 'Profit', align: 'right', sortable: true },
 ];
 
-function renderCell(row, key) {
+/**
+ * Team view of the click log. Same rows, money removed.
+ *
+ * Note the two different "status" ideas here: the existing Status column is
+ * the CLICK's own state (ok / bot / blocked / converted), while the P&L column
+ * is the money badge. They are separate keys on the row for exactly that
+ * reason — see server/utils/teamView.js.
+ */
+const TEAM_COLUMNS = [
+  { key: 'clickedAt', label: 'Timestamp', align: 'left', sortable: true },
+  { key: 'clickId', label: 'Click ID', align: 'left', sortable: false },
+  { key: 'offerName', label: 'Offer', align: 'left', sortable: true },
+  { key: 'status', label: 'Status', align: 'left', sortable: false },
+  { key: 'blockReason', label: 'Block Reason', align: 'left', sortable: false },
+  { key: 'conversionStatus', label: 'Conv. Status', align: 'left', sortable: false },
+  { key: 'ip', label: 'IP', align: 'left', sortable: false },
+  { key: 'country', label: 'Country', align: 'left', sortable: false, field: 'country' },
+  { key: 'device', label: 'Device', align: 'left', sortable: false, field: 'device' },
+  { key: 'os', label: 'OS', align: 'left', sortable: false },
+  { key: 'browser', label: 'Browser', align: 'left', sortable: false },
+  { key: 'source', label: 'Source', align: 'left', sortable: false, field: 'source' },
+  { key: 'subId1', label: 'Sub1', align: 'left', sortable: false },
+  { key: 'pnl', label: 'Performance', align: 'left', sortable: false, field: 'status' },
+];
+
+function renderCell(row, key, timezone) {
   switch (key) {
     case 'clickedAt':
-      return <span className="text-gray-600 text-xs whitespace-nowrap">{row.clickedAt ? new Date(row.clickedAt).toLocaleString() : '—'}</span>;
+      // Rendered in the report's timezone, not the browser's — see utils/datetime.
+      return <span className="text-gray-600 text-xs whitespace-nowrap">{fmtDateTime(row.clickedAt, timezone)}</span>;
+    case 'pnl':
+      return <PnlBadge status={row.pnlStatus} label={row.pnlLabel} />;
     case 'offerName':
       return <span className="font-medium text-gray-900 truncate max-w-[180px] inline-block text-xs">{row.offerName}</span>;
     case 'status':
@@ -109,6 +139,7 @@ export default function LogReport() {
       defaultDays={0}
       autoRefreshMs={12000}
       renderCell={renderCell}
+      teamColumns={TEAM_COLUMNS}
       extraFilters={extraFilters}
       extraParams={{ status: statusFilter, search: searchText }}
       hideChart

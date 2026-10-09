@@ -9,9 +9,23 @@ const presets = require('../config/networkPresets');
  * @param {string} opts.secret         - advertiser postback secret
  * @returns {string} fully-formed postback URL
  */
-function buildPostbackUrl({ trackingDomain, network, secret }) {
+/** Same rule as clickIdMacro() in client/src/utils/postbackUrl.js. */
+function clickIdMacro(preset, clickIdParam) {
+  const macro = preset.macros.click_id;
+  const param = String(clickIdParam || '').trim();
+  if (!param) return macro;
+  const presetParam = String(preset.clickIdParam || '').trim();
+  if (presetParam && presetParam.toLowerCase() === param.toLowerCase()) return macro;
+  const m = macro.match(/^([{[#])(.+?)([}\]#])$/);
+  if (!m) return `{${param}}`;
+  const inner = m[2];
+  const upper = /[A-Z]/.test(inner) && inner === inner.toUpperCase();
+  return `${m[1]}${upper ? param.toUpperCase() : param}${m[3]}`;
+}
+
+function buildPostbackUrl({ trackingDomain, network, secret, clickIdParam }) {
   const preset = presets[network] || presets.custom;
-  const m = preset.macros;
+  const m = { ...preset.macros, click_id: clickIdMacro(preset, clickIdParam) };
   const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
   // Some networks expose extra signals worth carrying (e.g. Katalys sends an
   // approval status and a create/update/delete operation). TrackHive ignores
@@ -38,4 +52,4 @@ function buildPostbackUrl({ trackingDomain, network, secret }) {
   );
 }
 
-module.exports = { buildPostbackUrl };
+module.exports = { buildPostbackUrl, clickIdMacro };

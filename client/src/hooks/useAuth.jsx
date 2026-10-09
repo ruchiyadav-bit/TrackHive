@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import api from '../api/client';
+import { setDashboardTimezone } from '../utils/datetime';
 
 const AuthContext = createContext(null);
 
@@ -15,6 +16,7 @@ export function AuthProvider({ children }) {
     }
     try {
       const { data } = await api.get('/auth/me');
+      setDashboardTimezone(data.user?.dashboardTimezone);
       setUser(data.user);
     } catch {
       localStorage.removeItem('token');
@@ -33,6 +35,7 @@ export function AuthProvider({ children }) {
     const { data } = await api.post('/auth/login', { email, password, rememberMe });
     localStorage.setItem('token', data.token);
     localStorage.setItem('user', JSON.stringify(data.user));
+    setDashboardTimezone(data.user?.dashboardTimezone);
     setUser(data.user);
     return data;
   };
@@ -40,6 +43,7 @@ export function AuthProvider({ children }) {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    setDashboardTimezone('');
     setUser(null);
   };
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Activity, Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
 import api from '../api/client';
+import { fmtDateTime } from '../utils/datetime';
 
 const ACTION_LABELS = {
  offer_created: 'Offer Created',
@@ -41,6 +42,8 @@ export default function ActivityLog() {
  const [loading, setLoading] = useState(true);
  const [filters, setFilters] = useState({ action: '', entityType: '', search: '', from: '', to: '' });
  const [showFilters, setShowFilters] = useState(false);
+ // Account reporting timezone, as returned with the activity response.
+ const [timezone, setTimezone] = useState('');
 
  const fetchLogs = async (page = 1) => {
  setLoading(true);
@@ -55,6 +58,7 @@ export default function ActivityLog() {
  const { data } = await api.get('/activity', { params });
  setLogs(data.logs || []);
  setPagination(data.pagination || { page: 1, pages: 1, total: 0 });
+ setTimezone(data.timezone || '');
  } catch (err) {
  console.error(err);
  } finally {
@@ -184,7 +188,7 @@ export default function ActivityLog() {
  )}
  </div>
  <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
- {new Date(log.createdAt).toLocaleString()}
+ {fmtDateTime(log.createdAt, timezone)}
  </span>
  </div>
  ))}

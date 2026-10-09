@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteSettings } from '../hooks/useSiteSettings';
 
 export default function Signup() {
   const [name, setName] = useState('');
@@ -11,6 +12,7 @@ export default function Signup() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { checkAuth } = useAuth();
+  const { siteName } = useSiteSettings();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -40,7 +42,7 @@ export default function Signup() {
       <div className="w-full max-w-md">
         <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8">
           <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-blue-600">TrackHive</h1>
+            <h1 className="text-2xl font-bold text-blue-600">{siteName}</h1>
             <p className="text-sm text-gray-500 mt-1">Create your account</p>
           </div>
 

@@ -5,6 +5,9 @@ import {
  Pencil, Copy, Trash2, ExternalLink, Link2, Eye, RefreshCw,
 } from 'lucide-react';
 import api from '../api/client';
+import SearchSuggest from '../components/ui/SearchSuggest';
+import { useAuth } from '../hooks/useAuth';
+import { isReadOnly, isTeam } from '../utils/roles';
 import { formatDate } from '../utils/formatDate';
 import { formatCurrency, formatNumber } from '../utils/formatCurrency';
 import { STATUSES, CATEGORIES } from '../utils/constants';
@@ -27,7 +30,7 @@ const PAGE_SIZES = [25, 50, 100];
 
 // ---- Action Menu ----
 
-function ActionMenu({ offer, onEdit, onDuplicate, onDelete, onCopyUrl }) {
+function ActionMenu({ offer, onEdit, onDuplicate, onDelete, onCopyUrl, canEdit, canOpenDetail }) {
  const [open, setOpen] = useState(false);
  const ref = useRef(null);
 
@@ -37,14 +40,20 @@ function ActionMenu({ offer, onEdit, onDuplicate, onDelete, onCopyUrl }) {
  return () => document.removeEventListener('mousedown', handler);
  }, []);
 
- const items = [
+ // A view-only account keeps the harmless entries and loses the rest; the
+ // server would refuse the write anyway, so leaving them visible only buys a
+ // 403 toast.
+ const items = canEdit ? [
  { label: 'Edit', icon: Pencil, action: () => onEdit(offer._id) },
  { label: 'Duplicate Offer', icon: Copy, action: () => onDuplicate(offer._id) },
  { label: 'Copy Landing Page URL', icon: Link2, action: () => onCopyUrl(offer.landingPageUrl || offer.offerUrl || '') },
  { label: 'View Details', icon: Eye, action: () => onEdit(offer._id, true) },
  { divider: true },
  { label: 'Delete', icon: Trash2, action: () => onDelete(offer._id), danger: true },
- ];
+ ] : [
+ { label: 'Copy Landing Page URL', icon: Link2, action: () => onCopyUrl(offer.landingPageUrl || offer.offerUrl || '') },
+ canOpenDetail && { label: 'View Details', icon: Eye, action: () => onEdit(offer._id, true) },
+ ].filter(Boolean);
 
  return (
  <div className="relative" ref={ref}>
@@ -116,6 +125,13 @@ function DeviceChips({ devices = [] }) {
 // ---- Main Component ----
 
 export default function Offers() {
+ const { user } = useAuth();
+ // Read-only accounts (team members) browse offers but change nothing.
+ const canEdit = !isReadOnly(user);
+ // A team member has no single-offer page at all — the row is not clickable
+ // and the menu loses "View Details", so there is no dead end to walk into.
+ const canOpenDetail = !isTeam(user);
+ const showRevenue = !isTeam(user);
  const [offers, setOffers] = useState([]);
  const [loading, setLoading] = useState(true);
  const [refreshing, setRefreshing] = useState(false);
@@ -128,10 +144,19 @@ export default function Offers() {
  const [copied, setCopied] = useState(null);
  const navigate = useNavigate();
 
- const fetchOffers = async () => {
+ // Every offer name, for the search suggestions.
+ const [allNames, setAllNames] = useState([]);
+ useEffect(() => {
+ api.get('/offers', { params: { limit: 500 } })
+ .then(({ data }) => setAllNames((data.offers || []).map(o => o.name)))
+ .catch(() => {});
+ }, []);
+
+ const fetchOffers = async (searchOverride) => {
  try {
  const params = { page, limit: pageSize };
- if (search) params.search = search;
+ const q = typeof searchOverride === 'string' ? searchOverride : search;
+ if (q) params.search = q;
  if (statusFilter) params.status = statusFilter;
  if (categoryFilter) params.category = categoryFilter;
  const { data } = await api.get('/offers', { params });
@@ -147,6 +172,8 @@ export default function Offers() {
  useEffect(() => { fetchOffers(); }, [statusFilter, categoryFilter, page, pageSize]);
 
  const handleSearch = (e) => { e.preventDefault(); setPage(1); fetchOffers(); };
+ // Picking a suggestion searches for that offer straight away.
+ const pickSearch = (name) => { setSearch(name); setPage(1); fetchOffers(name); };
  const handlePageSizeChange = (newSize) => { setPageSize(newSize); setPage(1); };
 
  const handleDuplicate = async (id) => {
@@ -188,28 +215,29 @@ export default function Offers() {
  >
  <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
  </button>
+ {canEdit && (
  <Link
  to="/offers/new"
  className="flex items-center gap-2 px-4 py-2 border-2 border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
  >
  <Plus size={16} /> Offer
  </Link>
+ )}
  </div>
  </div>
 
  {/* Filters Bar */}
  <div className="flex flex-wrap items-center gap-3 mb-4">
  <form onSubmit={handleSearch} className="flex items-center gap-2 flex-1 min-w-[240px]">
- <div className="relative flex-1">
- <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
- <input
- type="text"
+ <SearchSuggest
+ className="flex-1"
  value={search}
- onChange={(e) => setSearch(e.target.value)}
+ onChange={setSearch}
+ onPick={pickSearch}
+ names={allNames}
  placeholder="Search offers..."
- className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900"
+ inputClassName="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-gray-900"
  />
- </div>
  </form>
 
  {/* Status filter with dot */}
@@ -242,9 +270,11 @@ export default function Offers() {
  ) : offers.length === 0 ? (
  <div className="p-12 text-center">
  <p className="text-gray-500 mb-3">No offers found</p>
+ {canEdit && (
  <Link to="/offers/new" className="text-sm text-blue-600 hover:text-blue-800 font-medium">
  Create your first offer
  </Link>
+ )}
  </div>
  ) : (
  <div className="overflow-x-auto">
@@ -257,8 +287,12 @@ export default function Offers() {
  <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Status</th>
  <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Device Types</th>
  <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Countries</th>
- <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Revenue</th>
- <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Payout</th>
+ {/* The offer's own earnings, the same figure its detail page shows —
+ not the revenueType/payoutAmount that used to sit here, which is
+ setup config and read $0.00 on every Impact offer because the
+ amount arrives with the postback, not from the form. */}
+ {showRevenue && <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Revenue</th>}
+ <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">CVR</th>
  {/* This column shows offer.totalClicks, which counts EVERY click including
      blocked ones — i.e. the same figure Reports calls "Gross Clicks".
      Reports' own "Clicks" column is gross minus invalid, so the two would
@@ -272,14 +306,14 @@ export default function Offers() {
  {offers.map((offer) => (
  <tr
  key={offer._id}
- onClick={() => navigate(`/offers/${offer._id}`)}
- className="hover:bg-blue-50/40 transition-colors cursor-pointer"
+ onClick={canOpenDetail ? () => navigate(`/offers/${offer._id}`) : undefined}
+ className={`transition-colors ${canOpenDetail ? 'hover:bg-blue-50/40 cursor-pointer' : 'hover:bg-gray-50/60'}`}
  >
  {/* Name + Status dot */}
  <td className="px-4 py-3 max-w-[260px]">
  <div className="flex items-center gap-2">
  <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot[offer.status] || 'bg-gray-300'}`} />
- <span className="font-medium text-gray-900 truncate hover:text-blue-600">
+ <span className={`font-medium text-gray-900 truncate ${canOpenDetail ? 'hover:text-blue-600' : ''}`}>
  {offer.name}
  </span>
  </div>
@@ -312,20 +346,19 @@ export default function Offers() {
  <GeoChips countries={offer.geoCountries} mode={offer.geoMode} />
  </td>
 
- {/* Revenue config */}
- <td className="px-4 py-3 whitespace-nowrap">
- <div className="text-xs text-gray-500">{offer.revenueType || 'RPA'}</div>
- <div className="font-medium text-gray-900">
- {formatCurrency(offer.revenueAmount, offer.currency)}
- </div>
+ {/* Revenue earned. Absent for a team member — the server does not
+ even send totalRevenue to that role. */}
+ {showRevenue && (
+ <td className="px-4 py-3 text-right whitespace-nowrap font-medium text-blue-600">
+ {formatCurrency(offer.totalRevenue || 0, offer.currency)}
  </td>
+ )}
 
- {/* Payout config */}
- <td className="px-4 py-3 whitespace-nowrap">
- <div className="text-xs text-gray-500">{offer.payoutType || 'CPA'}</div>
- <div className="font-medium text-gray-900">
- {formatCurrency(offer.payoutAmount, offer.currency)}
- </div>
+ {/* CVR */}
+ <td className="px-4 py-3 text-right whitespace-nowrap text-gray-600">
+ {offer.totalClicks > 0
+ ? `${((offer.totalConversions || 0) / offer.totalClicks * 100).toFixed(2)}%`
+ : '—'}
  </td>
 
  {/* Clicks */}
@@ -346,6 +379,8 @@ export default function Offers() {
  onDuplicate={handleDuplicate}
  onDelete={handleDelete}
  onCopyUrl={handleCopyUrl}
+ canEdit={canEdit}
+ canOpenDetail={canOpenDetail}
  />
  </td>
  </tr>

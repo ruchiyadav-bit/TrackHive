@@ -171,31 +171,41 @@ Last verified: 2026-08-17
 
 - **JWT-based auth** — login returns a token, stored in localStorage, sent as `Bearer` header on every API call
 - **Self-registration** — anyone can sign up at `/signup`; the role is pinned server-side and the form has no role field
-- **TWO roles only** — `manager` and `partner`, defined in `server/config/roles.js`
+- **THREE roles** — `manager`, `partner` and `team`, defined in `server/config/roles.js`
 - **Manager seeding** — on first run, creates a manager using `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env`
 - **Offer-level access control** — users can additionally be restricted to specific offers (`offerAccess: 'specific'`), which *narrows* ownership, never widens it
 
-**The role model (changed 2026-08-19 — was 4 roles: super_admin / admin / manager / viewer):**
+**The role model (4 roles → 2 on 2026-08-19; `team` added 2026-09-16):**
 
-`manager` is NOT a data permission. Both roles see only what they created; a manager
-additionally *administers* the account.
+`manager` is NOT a data permission. manager and partner see only what they created; a
+manager additionally *administers* the account. `team` is the one deliberate exception —
+see "Team Dashboard" below.
 
-| | manager | partner |
-|---|---|---|
-| Own offers, advertisers, clicks, reports | ✅ | ✅ |
-| **Anyone else's** | ❌ | ❌ |
-| User Management (`/api/users`) | ✅ | ❌ |
-| Tracking Domains — add / verify / delete | ✅ | ❌ |
-| Tracking Domains — read (picker) | ✅ | ✅ (trimmed fields) |
-| Settings writes, Telegram | ✅ | ❌ |
-| Settings tabs visible | all | General + Security |
+| | manager | partner | team |
+|---|---|---|---|
+| Own offers, advertisers, clicks, reports | ✅ | ✅ | owns nothing |
+| Reads **another user's** data | ❌ | ❌ | ✅ its `teamOwner`'s, read-only |
+| Revenue / Payout / Profit anywhere | ✅ | ✅ | ❌ stripped server-side |
+| Create / edit / delete anything | ✅ | ✅ | ❌ every non-GET refused |
+| Single-offer detail page | ✅ | ✅ | ❌ route blocked |
+| Advertiser postback secret | ✅ | ✅ | ❌ hidden |
+| User Management (`/api/users`) | ✅ | ❌ | ❌ |
+| Tracking Domains — add / verify / delete | ✅ | ❌ | ❌ |
+| Tracking Domains — read (picker) | ✅ | ✅ (trimmed fields) | ✅ read-only page |
+| Settings writes, Telegram | ✅ | ❌ | ❌ |
+| Settings tabs visible | all | General + Security | General only |
 
 **Data isolation — `server/utils/scope.js`**
 
 Ownership is `createdBy`, present on Offer, Advertiser, OfferGroup, OfferTemplate,
 TrackingDomain and (since 2026-08-19) Notification.
 
-- `ownerFilter(user)` → `{ createdBy: user._id }` for **everyone**, no role exemption
+- `dataOwnerId(user)` → whose rows this request may read: `user._id` for manager/partner,
+  `user.teamOwner` for a team account. A team account with no `teamOwner` gets a **fresh
+  ObjectId**, which matches nothing — returning `undefined` would have made
+  `{ createdBy: undefined }` match every row in the account
+- `ownerFilter(user)` → `{ createdBy: dataOwnerId(user) }`; the team role is the ONLY
+  exemption and it lives entirely inside `dataOwnerId` — never add a second one
 - `ownsDoc(doc, user)` → strict compare; a doc with no `createdBy` belongs to nobody
 - `visibleOfferIds(user)` → always an array; `[]` means "owns nothing" and must match **no** rows
 - `offerScopeMatch(ids)` → `{ offerId: { $in: ids } }`; the empty-array case is the whole point
@@ -345,7 +355,7 @@ Advertisers are the companies/networks whose offers you're tracking.
 
 - **CRUD operations** — create, list, update, delete advertisers
 - **Postback secret** — auto-generated 32-char hex string per advertiser, can be regenerated
-- **Network presets** — select from Impact, Everflow, Affise, Trackier, Cellxpert, or Custom — auto-sets click ID param and postback macros
+- **Network presets** — select from Impact, Everflow, Affise, Trackier, Cellxpert, Katalys, SmartAdv, Oasis Ads, or Custom — auto-sets click ID param and postback macros
 - **Click ID parameter** — configurable per advertiser, determined by network preset (e.g. `subId1` for Impact, `sub1` for Everflow, `p1` for Trackier)
 - **Contact info** — name, email for each advertiser
 - **Linked to offers** — `Offer.advertiser` is an ObjectId ref to Advertiser
@@ -385,6 +395,7 @@ Each preset defines `clickIdParam` (outgoing — the query param name used in th
 | Affise | `sub1` | `https://offer.affise.com/c/XXX?sub1={click_id}` |
 | Trackier | `p1` | `https://tracking.trackier.com/c/XXX?p1={click_id}` |
 | Cellxpert | `xid` | `https://tracking.cellxpert.com/c/XXX?xid={click_id}` |
+| Oasis Ads | `s1` | `https://<oasisads-offer-url>?s1={click_id}` |
 | Custom | `click_id` | `https://advertiser.com/lp?click_id={click_id}` |
 
 **Incoming — postback macros (in postback URL the network fires back):**
@@ -395,6 +406,7 @@ Each preset defines `clickIdParam` (outgoing — the query param name used in th
 | Affise | `{clickid}` | `{sum}` | `{sum}` | `{goal}` | `{conversion_id}` |
 | Trackier | `{click_id}` | `{sale_amount}` | `{payout}` | `{goal_value}` | `{txn_id}` |
 | Cellxpert | `[clickid]` | `[amount]` | `[commission]` | `[eventtype]` | `[transactionid]` |
+| Oasis Ads | `{s1}` | `{conversion_earnings}` | `0` | `{event_id}` | `{tid}` |
 | Custom | `{click_id}` | `{revenue}` | `{payout}` | `{event}` | `{txn_id}` |
 
 **Note:** Cellxpert uses **square brackets** `[ ]`, not curly braces `{ }`. Always use the values from this config — never hardcode macro syntax.
@@ -700,14 +712,114 @@ Last verified: 2026-08-17
 
 ---
 
+### 20. Team Dashboard (read-only `team` role)
+
+Added 2026-09-16, for media buyers. They need to see how traffic is performing without
+seeing what the account earns.
+
+**Data window** — a team account owns nothing. `User.teamOwner` records whose book it
+reads, and is set to the manager who created it. `utils/scope.js` swaps that id in, so
+every existing scoped query works unchanged.
+
+**Read-only** — enforced in ONE place, `middleware/auth.js`: any non-GET from a read-only
+role is refused with 403 before it reaches a route. Not per-route, because a route added
+later is easy to forget and this is not. The allow-list is currently empty, so a team
+member cannot change even their own password — a manager resets it.
+
+**Money removal — `server/utils/teamView.js`**
+
+Hiding a column in React hides nothing; the numbers are still one Network-tab click away.
+So the fields are deleted from the response:
+
+```
+revenue, payout, profit, margin, saleAmount,
+cpc, cpa, rpc, rpa, epc,
+totalRevenue, totalPayout, totalProfit, revenueAmount, payoutAmount
+```
+
+Applied at five boundaries, not one — each was its own leak:
+1. report rows + summary (`teamReportPayload`)
+2. the performance graph, whose points carried revenue and profit
+3. the Dashboard cards, top-offer list and recent clicks
+4. CSV export — a separate endpoint, and the obvious way around a hidden column
+5. Offers and Offer-detail documents (`stripMoneyForUser`, recursive — per-event
+   `revenueAmount` sits two levels down and a shallow delete shipped it)
+
+**Performance badge** — what replaces the money. Computed server-side from the earnings
+about to be thrown away, against targets the manager sets in Settings → General.
+
+| Badge | When |
+|---|---|
+| Excellent | earnings ≥ excellent target |
+| Very Good | ≥ very-good target |
+| Good | ≥ good target |
+| Low | earned something, below the good target |
+| Pending | converted but the network booked 0 (pending/reversed) |
+| No data | no conversion at all |
+
+Targets live in **four bands**, all twelve editable by the manager in
+**Settings → Team View**:
+
+| Band | Settings keys | Default Good / Very Good / Excellent |
+|---|---|---|
+| hour | `tierHourGood` … | 4.17 / 10.42 / 20.83 |
+| day | `tierGood` / `tierVeryGood` / `tierExcellent` | 100 / 250 / 500 |
+| week | `tierWeekGood` … | 700 / 1750 / 3500 |
+| month | `tierMonthGood` … | 3000 / 7500 / 15000 |
+
+The day band deliberately keeps the original un-prefixed keys, so an account that had
+already saved targets keeps them — no migration.
+
+`bandFor(days)` picks the band from how long ONE ROW covers and returns a scale:
+
+```
+< 1 day   -> hour  band, scale = days x 24
+< 2 days  -> day   band, scale = days
+< 14 days -> week  band, scale = days / 7
+otherwise -> month band, scale = days / 30
+```
+
+A range that matches a band exactly (1 day, 7 days, 30 days, one hour) scores against the
+manager's numbers as typed, scale 1.0. Ten days is the weekly row x 10/7. Without this the
+same offer scored "Good" on a one-day report and "Excellent" on a seven-day one purely
+because the row covered more days.
+
+A target of 0 or blank is ignored and the default used instead — zero would make every row
+Excellent.
+
+Conversion and Log rows are single events, so they get `Converted / Pending / —` rather
+than a tier — one conversion cannot be scored against a daily target.
+
+The badge lands on `pnlStatus`, NOT `status`: the click log already ships a `status` of its
+own (`ok` / `bot` / `blocked` / `converted`) and writing over it replaced every click's
+badge with a performance one.
+
+**Per-member toggles** — `User.teamReportFields`, edited in User Management. A field
+switched off is deleted from the response, not merely hidden in the table.
+
+**Settings → Team View** — its own tab (manager-only), holding the badge legend and the
+4 x 3 target grid. Deliberately not a block at the bottom of General: it is a dozen inputs
+plus a legend, read by a different audience than the rest of General.
+
+**Client** — `isReadOnly(user)` decides whether a Create / Edit / Delete control renders at
+all; `client/src/utils/reportConfig.js` decides which derived money columns render for
+everyone. Hiding is a courtesy on top of the server guard, never the guard itself.
+
+Last verified: 2026-09-16
+
+---
+
 ## Database Schema (MongoDB)
 
 ### User
 ```
 name, email (unique, lowercase), password (bcrypt hashed, min 8 chars),
-role (super_admin|admin|manager|viewer, default: viewer),
+role (manager|partner|team, default: partner),
 status (active|inactive, default: active),
 offerAccess (all|specific, default: all), allowedOffers [→ Offer],
+teamOwner (→ User, TEAM ROLE ONLY — whose data this account reads; unset = sees nothing),
+teamReportFields { grossClicks, clicks, uniqueClicks, dupClicks, invalidClicks,
+                   conversions, cvr, status, country, device, source } (all Boolean, default true),
 notificationPrefs { emailOnNewReport, emailOnCapAlert, emailOnOfferChange },
 lastLogin, createdBy (→ User)
 ```
@@ -768,6 +880,8 @@ subId1 (indexed), subId2, subId3, subId4, subId5, source,
 isSmartLink, smartLinkSlug, uniqueHash,
 isBot, isVpn, isDuplicate, isBlocked, blockReason,
 converted, conversionId, conversionAt, revenue, payout, profit, conversionEvent,
+saleAmount (the merchant's ORDER TOTAL — reference only, never revenue; see the
+            Impact section below for why the two are not the same thing),
 redirectUrl, redirectType, responseTimeMs,
 clickedAt (default: Date.now)
 ```
@@ -1147,9 +1261,31 @@ https://impact-tracking-link.com/c/XXXXX?subId1={click_id}
 **Step 3 — Set postback in Impact:**
 Copy the postback URL from the Advertiser Detail page (it's auto-built with correct macros), or manually construct:
 ```
-https://trackhive-ia0a.onrender.com/postback?click_id={SubId1}&revenue={Amount}&payout={Payout}&event={ActionTrackerName}&secret=<secret>
+https://<tracking-domain>/postback?click_id={SubId1}&revenue={Payout}&payout=0&sale_amount={Amount}&event={ActionTrackerName}&secret=<secret>
 ```
 In Impact dashboard → Settings → Event Notifications → Action Life Cycle Events.
+
+> **CHANGED 2026-09-16 — re-paste this URL in Impact.**
+>
+> Impact ships two different amounts and the preset had them the wrong way round:
+>
+> | Impact column | What it is | Whose money |
+> |---|---|---|
+> | `{Amount}` — "Sale Amount" | the customer's order total | the **merchant's** |
+> | `{Payout}` — "Action Earnings" | the commission Impact pays us | **ours** |
+>
+> The preset used to map `revenue={Amount}` and `payout={Payout}`, so TrackHive booked the
+> merchant's sale as our revenue and our actual earnings as a payout. On live data that read
+> `$629.92` revenue against `$126.00` payout and reported `$503.92` profit, when the real
+> earnings were `$126.00` — profit overstated five-fold.
+>
+> Now: `revenue={Payout}`, `payout=0` (we pay nobody downstream), and the order total is
+> kept for reference in `sale_amount={Amount}`.
+>
+> Everflow, Katalys, SmartAdv and Oasis Ads were already correct — their `revenue` macro
+> was the network's payout to us. **Affise, Trackier and Cellxpert look wrong in the same
+> way** (`{sum}`, `{sale_amount}`, `[amount]` are all order totals) but are UNVERIFIED and
+> unused, so they carry a warning comment and were left alone.
 
 **Flow:**
 ```
@@ -1361,3 +1497,102 @@ with `400 click_id is required` because `{aff_sub1}` resolved empty. Everything 
 that (secret, POST body handling, revenue parsing, reversal) is confirmed working.
 
 Last verified: 2026-08-19
+
+---
+
+## Changelog — 2026-09-14 → 2026-09-16
+
+### Report metrics — CPC / CPA / RPC / RPA were all four wrong
+`C*` means cost (what we pay out), `R*` means revenue (what we earn) — the same convention
+the offer wizard uses, where Revenue types are `RP*` and Payout types `CP*`. The report
+computed all four from revenue and profit, so CPC showed RPC's value and RPC showed
+profit-per-click. Fixed in `buildSummary` and `addRateFields`:
+
+```
+cpc = payout  / clicks        cpa = payout  / conversions
+rpc = revenue / clicks        rpa = revenue / conversions
+```
+
+CPC and RPC now carry 4 decimals — at this traffic volume they are fractions of a cent and
+a flat 2-decimal format collapsed `$0.0122` to `$0.01`.
+
+### Clicks total — frequency-capped clicks inflated the CVR denominator
+`Invalid` deliberately excludes frequency-cap blocks so one click is never counted in both
+the Dup and the Invalid card. But `Clicks = Gross − Invalid` then counted a capped click
+that was never delivered to the offer. New `BLOCKED_CLICKS_EXPR` counts EVERY block, and
+`Clicks = Gross − Blocked`. Dup and Invalid cards are unchanged.
+
+### Timezone — half the report endpoints never sent one
+`conversionReport`, `hourlyReport` and `logReport` returned no `timezone` field, so the
+client fell back to the VIEWER's browser zone: the summary was bucketed in the account zone
+while the rows above it were printed in IST. A conversion counted on Sept 13 Pacific printed
+as Sept 14. All five endpoints now send `timezone: tz`; `client/src/utils/datetime.js`
+renders every timestamp in it. `/api/dashboard/recent-clicks` and `/api/activity` send it too.
+
+### Impact revenue/payout mapping — see the Impact section above
+`revenue={Payout}`, `payout=0`, new `sale_amount={Amount}` and a `Click.saleAmount` field.
+**Requires re-pasting the postback URL in Impact.**
+
+### Report columns — Profit / Margin / CPC / CPA hidden
+`client/src/utils/reportConfig.js` → `PROFIT_TRACKING = false`.
+
+Revenue and Payout stay visible: they are the raw figures the network sent, and right now
+they are the only way to tell which mapping a row was booked under (payout > 0 = old row,
+payout = 0 = new row). Everything derived from the pair is hidden because the pair is
+currently inconsistent. Flip the flag to `true` once the migration below has run.
+
+### Team Dashboard
+New `team` role — see feature section 20.
+
+### Advertiser delete — blocked forever by offers that were already deleted
+Deleting an offer is a SOFT delete: `offerController.deleteOffer` sets `status:'deleted'`
+and the row stays in the collection. But `advertiserController.remove` counted linked
+offers without excluding those, so an advertiser whose only offer had been deleted could
+never be removed, and the error named an offer that appears nowhere in the UI.
+
+Both the delete check and the advertiser detail page's offer list now filter
+`status: { $ne: 'deleted' }`. The detail page was also counting deleted offers' clicks,
+conversions and revenue into its stats.
+
+**Rule for anything added later:** every query against `Offer` outside of an explicit
+"show me deleted things" view must carry `status: { $ne: 'deleted' }`.
+
+---
+
+## PENDING — one-time data migration (not yet run)
+
+Rows booked before the Impact fix carry the old mapping; rows booked after carry the new
+one. Both sit in the same collection, so no total reconciles against Impact until the old
+rows are converted.
+
+**The swap, per old conversion row:**
+
+```
+new saleAmount = old revenue     ($119.98 — the merchant's sale)
+new revenue    = old payout      ($24.00  — our actual earnings)
+new payout     = 0
+new profit     = new revenue - 0 ($24.00)
+```
+
+**Which rows** — `payout > 0 AND saleAmount = 0`. New rows are the mirror image of that.
+Everflow / Katalys / SmartAdv / Oasis rows are excluded automatically because their payout
+was already 0 — their mapping was right from the start.
+
+**Not just the Click collection.** These have to be recalculated in the same pass or the
+offer page and the daily report keep showing the old totals:
+- `Offer.totalRevenue` / `totalPayout` / `totalProfit`
+- `DailyStat` per-day totals
+
+**Order of operations:**
+1. Deploy the code
+2. Re-paste the postback URL in Impact — from that moment new conversions are correct
+3. THEN migrate — so no new old-mapping row arrives after the migration has run
+4. Flip `PROFIT_TRACKING` to `true` — Profit / Margin / CPC / CPA come back, now truthful
+
+**Before running:** `mongodump` backup, then a dry-run that reports how many rows would
+change and what the new totals would be, confirmed by hand before the real run.
+
+Paused 2026-09-16 at Kushal's request — the code is deployed first, the migration waits
+until it is needed.
+
+Last verified: 2026-09-16

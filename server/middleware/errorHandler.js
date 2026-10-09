@@ -1,5 +1,12 @@
+const { recordError } = require('../utils/serverMetrics');
+
 const errorHandler = (err, req, res, next) => {
   console.error(err.stack);
+
+  // Also keep it in memory for System Health — the PM2 log is the full record,
+  // but nobody opens it, and "5 server errors in the last hour" is useless
+  // without being able to see what they were.
+  recordError(err, req);
 
   // Zod validation errors
   if (err.name === 'ZodError') {

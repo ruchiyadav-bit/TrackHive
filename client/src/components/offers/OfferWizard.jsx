@@ -33,7 +33,7 @@ const defaultForm = {
  thumbnail: '', offerGroup: '', labels: [], appIdentifier: '', previewUrl: '',
  internalNotes: '', channels: [], hasExpiration: false, expirationDate: '', description: '',
  // Step 2
- landingPageUrl: '', trackingDomain: '', linkingType: 'redirect',
+ landingPageUrl: '', googleLandingUrl: '', trackingDomain: '', linkingType: 'redirect',
  conversionTrackingMethod: 'server_postback', supportDeepLinks: false,
  enableCaps: false, dailyClickCap: 0, dailyConversionCap: 0, monthlyConversionCap: 0, totalCap: 0,
  offerVisibility: 'public', enableTerms: false, termsContent: '',
@@ -436,7 +436,7 @@ function StepTracking({ form, setField, trackingDomains, advertisers = [], error
  />
 
  <SectionHeader>Tracking Domain</SectionHeader>
- <Select label="Tracking Domain" value={form.trackingDomain} onChange={v => setField('trackingDomain', v)}
+ <Select label="Tracking Domain" required value={form.trackingDomain} onChange={v => setField('trackingDomain', v)} error={errors.trackingDomain}
  options={trackingDomains.filter(d => d.status === 'verified').map(d => ({ value: d._id, label: d.domain }))}
  placeholder={
   trackingDomains.length === 0
@@ -445,6 +445,14 @@ function StepTracking({ form, setField, trackingDomains, advertisers = [], error
    ? (canManageDomains ? 'Add tracking domain in Settings first' : 'No domain available — ask your manager to add one')
    : 'Select domain...'
  } />
+
+ <SectionHeader>Google Ads (optional)</SectionHeader>
+ <Input label="Google Ads Landing Page (your site)" value={form.googleLandingUrl || ''} onChange={v => setField('googleLandingUrl', v)}
+ placeholder="https://yoursite.com/review-page" />
+ <p className="text-xs text-gray-400 -mt-2">
+ The Final URL for Google Ads. Put the offer's tracking link on this page's button so the affiliate network still gets the click.
+ Leave empty if this offer does not run on Google Ads.
+ </p>
 
  <SectionHeader>Click Tracking</SectionHeader>
  <Select label="Linking Type" required value={form.linkingType} onChange={v => setField('linkingType', v)}
@@ -728,6 +736,8 @@ export default function OfferWizard({ offerId }) {
  }
  if (s === 1) {
  if (!form.landingPageUrl?.trim()) errs.landingPageUrl = 'Landing page URL is required';
+ // Required, no default — the tracking link is built on this domain.
+ if (!form.trackingDomain) errs.trackingDomain = 'Tracking domain is required';
  if (Number(form.ipCap) > 0 && form.onDuplicate === 'fallback' && !form.fallbackUrl?.trim()) {
  errs.fallbackUrl = 'Fallback URL is required when On Duplicate is set to "Send to fallback URL"';
  }
@@ -745,6 +755,13 @@ export default function OfferWizard({ offerId }) {
 
  const save = async (isDraft) => {
  if (!isDraft && !validateStep(step)) return;
+ // Tracking domain is required on every save (drafts too) and the server
+ // refuses an offer without one, so catch it here and jump to that step.
+ if (!form.trackingDomain) {
+ setErrors(prev => ({ ...prev, trackingDomain: 'Tracking domain is required' }));
+ setStep(1);
+ return;
+ }
  setSaving(true);
  try {
  const payload = { ...form };

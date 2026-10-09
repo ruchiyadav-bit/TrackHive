@@ -2,25 +2,27 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Edit2, Trash2, Copy, ExternalLink, Search, AlertTriangle, Check, Info, RefreshCw } from 'lucide-react';
 import api from '../api/client';
+import { useAuth } from '../hooks/useAuth';
+import { isReadOnly } from '../utils/roles';
 import { buildPostbackUrl, resolveAdvertiserDomain, toBaseUrl } from '../utils/postbackUrl';
+import AdvertiserFormModal from '../components/advertisers/AdvertiserFormModal';
+import SearchSuggest from '../components/ui/SearchSuggest';
 
+// Green is reserved for Active and red for Inactive — nothing else on this
+// list uses either colour.
 const statusColors = {
  active: 'bg-green-100 text-green-800',
- inactive: 'bg-gray-100 text-gray-600',
+ inactive: 'bg-red-100 text-red-700',
 };
 
-const networkBadgeColors = {
- impact: 'bg-indigo-100 text-indigo-700',
- everflow: 'bg-blue-100 text-blue-700',
- affise: 'bg-purple-100 text-purple-700',
- trackier: 'bg-teal-100 text-teal-700',
- cellxpert: 'bg-orange-100 text-orange-700',
- katalys: 'bg-rose-100 text-rose-700',
- smartadv: 'bg-emerald-100 text-emerald-700',
- custom: 'bg-gray-100 text-gray-600',
-};
+// Every network badge is the same blue. Colour on this list carries one
+// meaning only: green = Active, red = Inactive.
+const BADGE_BLUE = 'bg-blue-100 text-blue-700';
 
 export default function Advertisers() {
+ const { user } = useAuth();
+ // Read-only accounts see the advertiser list but cannot touch it.
+ const canEdit = !isReadOnly(user);
  const [advertisers, setAdvertisers] = useState([]);
  const [loading, setLoading] = useState(true);
  const [showModal, setShowModal] = useState(false);
@@ -32,10 +34,13 @@ export default function Advertisers() {
  const [settings, setSettings] = useState({});
  const [verifiedDomains, setVerifiedDomains] = useState([]);
  const [refreshing, setRefreshing] = useState(false);
- const [form, setForm] = useState({
-  name: '', company: '', website: '', status: 'active', network: 'custom',
-  clickIdParam: 'click_id', trackingDomain: '', contactName: '', contactEmail: '', notes: '',
- });
+ // Every advertiser name, for the search suggestions (the table itself is
+ // filtered by the search, so it cannot be the source).
+ const [allNames, setAllNames] = useState([]);
+ const fetchAllNames = () => {
+  api.get('/advertisers').then(({ data }) => setAllNames((data.advertisers || []).map(a => a.name))).catch(() => {});
+ };
+ useEffect(() => { fetchAllNames(); }, []);
 
  const fetchAdvertisers = async () => {
   try {
@@ -84,50 +89,11 @@ export default function Advertisers() {
   if (!preset) return null;
   const domain = resolveAdvertiserDomain(adv, settings, verifiedDomains);
   if (!domain) return null;
-  return buildPostbackUrl({ trackingDomain: toBaseUrl(domain), preset, secret: adv.postbackSecret });
+  return buildPostbackUrl({ trackingDomain: toBaseUrl(domain), preset, secret: adv.postbackSecret, clickIdParam: adv.clickIdParam });
  };
 
- const openAdd = () => {
-  setEditing(null);
-  setForm({ name: '', company: '', website: '', status: 'active', network: 'custom', clickIdParam: 'click_id', trackingDomain: '', contactName: '', contactEmail: '', notes: '' });
-  setShowModal(true);
- };
-
- const openEdit = (adv) => {
-  setEditing(adv);
-  setForm({
-   name: adv.name || '', company: adv.company || '', website: adv.website || '',
-   status: adv.status || 'active', network: adv.network || 'custom',
-   clickIdParam: adv.clickIdParam || 'click_id',
-   trackingDomain: (typeof adv.trackingDomain === 'object' ? adv.trackingDomain?._id : adv.trackingDomain) || '',
-   contactName: adv.contactName || '', contactEmail: adv.contactEmail || '', notes: adv.notes || '',
-  });
-  setShowModal(true);
- };
-
- const handleNetworkChange = (networkKey) => {
-  const preset = presets?.[networkKey];
-  setForm(prev => ({
-   ...prev,
-   network: networkKey,
-   clickIdParam: preset ? preset.clickIdParam : prev.clickIdParam,
-  }));
- };
-
- const save = async () => {
-  if (!form.name.trim()) return;
-  try {
-   if (editing) {
-    await api.put(`/advertisers/${editing._id}`, form);
-   } else {
-    await api.post('/advertisers', form);
-   }
-   setShowModal(false);
-   fetchAdvertisers();
-  } catch (err) {
-   console.error(err);
-  }
- };
+ const openAdd = () => { setEditing(null); setShowModal(true); };
+ const openEdit = (adv) => { setEditing(adv); setShowModal(true); };
 
  const remove = async (id) => {
   if (!window.confirm('Delete this advertiser?')) return;
@@ -150,7 +116,7 @@ export default function Advertisers() {
 
  const getNetworkLabel = (key) => {
   if (presets?.[key]) return presets[key].label;
-  const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', custom: 'Custom / Other' };
+  const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', oasisads: 'Oasis Ads', vipresponse: 'VIP Response', blueaff: 'BlueAff', salegains: 'SaleGains', maxbounty: 'MaxBounty', maxweb: 'MaxWeb', flexoffers: 'FlexOffers', fanfuel: 'FanFuel', musketeers: 'Musketeers (Trackier)', somicreative: 'Somi Creative (Affise)', custom: 'Custom / Other' };
   return fallback[key] || key;
  };
 
@@ -173,20 +139,21 @@ export default function Advertisers() {
      >
       <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
      </button>
-     <button onClick={openAdd} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
-      <Plus size={16} /> Add Advertiser
-     </button>
+     {canEdit && (
+      <button onClick={openAdd} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">
+       <Plus size={16} /> Add Advertiser
+      </button>
+     )}
     </div>
    </div>
 
-   <div className="relative max-w-sm">
-    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-    <input
-     value={search} onChange={(e) => setSearch(e.target.value)}
-     placeholder="Search advertisers..."
-     className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-    />
-   </div>
+   <SearchSuggest
+    className="max-w-sm"
+    value={search}
+    onChange={setSearch}
+    names={allNames}
+    placeholder="Search advertisers..."
+   />
 
    {loading ? (
     <div className="text-center py-12 text-gray-400">Loading...</div>
@@ -229,7 +196,7 @@ export default function Advertisers() {
           )}
          </td>
          <td className="px-4 py-3 align-top">
-          <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium ${networkBadgeColors[network] || networkBadgeColors.custom}`}>
+          <span className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium ${BADGE_BLUE}`}>
            {getNetworkLabel(network)}
           </span>
          </td>
@@ -251,16 +218,24 @@ export default function Advertisers() {
           ) : url ? (
            <div className="space-y-1">
             <div className="flex items-center gap-2">
-             <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${networkBadgeColors[network] || networkBadgeColors.custom}`}>
+             <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${BADGE_BLUE}`}>
               Ready for {getNetworkLabel(network)}
              </span>
              <button onClick={() => copyUrl(adv)} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
-              {copied === adv._id ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+              {copied === adv._id ? <Check size={12} className="text-blue-600" /> : <Copy size={12} />}
               {copied === adv._id ? 'Copied!' : 'Copy'}
              </button>
             </div>
+            {/* The domain this postback URL is built on. */}
+            <div className="text-xs text-gray-700 whitespace-nowrap">
+             <span className="text-gray-400">Domain:</span>{' '}
+             <span className="font-medium">{resolveAdvertiserDomain(adv, settings, verifiedDomains)}</span>
+            </div>
             {getInstruction(network) && (
-             <p className="text-[10px] text-gray-400 leading-tight">{getInstruction(network)}</p>
+             <details className="text-[10px] text-gray-400 leading-tight">
+              <summary className="cursor-pointer hover:text-gray-600">How to add on network</summary>
+              <p className="mt-1">{getInstruction(network)}</p>
+             </details>
             )}
             {network === 'custom' && (
              <p className="text-[10px] text-amber-500 leading-tight flex items-center gap-0.5">
@@ -274,8 +249,12 @@ export default function Advertisers() {
          </td>
          <td className="px-4 py-3">
           <div className="flex items-center gap-2">
-           <button onClick={() => openEdit(adv)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded hover:bg-blue-50"><Edit2 size={14} /></button>
-           <button onClick={() => remove(adv._id)} className="p-1.5 text-gray-400 hover:text-red-600 rounded hover:bg-red-50"><Trash2 size={14} /></button>
+           {canEdit ? (
+            <>
+             <button onClick={() => openEdit(adv)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded hover:bg-blue-50"><Edit2 size={14} /></button>
+             <button onClick={() => remove(adv._id)} className="p-1.5 text-gray-400 hover:text-red-600 rounded hover:bg-red-50"><Trash2 size={14} /></button>
+            </>
+           ) : <span className="text-xs text-gray-300">—</span>}
           </div>
          </td>
         </tr>
@@ -287,167 +266,14 @@ export default function Advertisers() {
     </div>
    )}
 
-   {/* Add/Edit Modal */}
-   {showModal && (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-     <div className="bg-white rounded-xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">
-       {editing ? 'Edit Advertiser' : 'Add Advertiser'}
-      </h2>
-      <div className="space-y-4">
-       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Advertiser Name *</label>
-        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-         placeholder="Impact.com" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-       </div>
-       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Company / Brand</label>
-        <input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })}
-         placeholder="BetMGM" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-       </div>
-       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Website</label>
-        <input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })}
-         placeholder="https://impact.com" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-       </div>
-       <div className="grid grid-cols-2 gap-4">
-        <div>
-         <label className="block text-sm font-medium text-gray-700 mb-1">Network</label>
-         <select value={form.network} onChange={(e) => handleNetworkChange(e.target.value)}
-          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500">
-          {presets ? Object.entries(presets).map(([key, p]) => (
-           <option key={key} value={key}>{p.label}</option>
-          )) : (
-           <>
-            <option value="impact">Impact.com</option>
-            <option value="everflow">Everflow</option>
-            <option value="affise">Affise</option>
-            <option value="trackier">Trackier</option>
-            <option value="cellxpert">Cellxpert</option>
-            <option value="katalys">Katalys</option>
-            <option value="smartadv">SmartAdv</option>
-            <option value="custom">Custom / Other</option>
-           </>
-          )}
-         </select>
-        </div>
-        <div>
-         <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-         <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500">
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
-         </select>
-        </div>
-       </div>
-       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-         Tracking Domain <span className="font-normal text-gray-400">(postback URL is built on this)</span>
-        </label>
-        <select value={form.trackingDomain} onChange={(e) => setForm({ ...form, trackingDomain: e.target.value })}
-         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-         <option value="">
-          {settings.trackingDomain
-           ? `Account default (${settings.trackingDomain})`
-           : verifiedDomains[0]
-             ? `Account default (${verifiedDomains[0].domain})`
-             : 'No domain available'}
-         </option>
-         {verifiedDomains.map(d => (
-          <option key={d._id} value={d._id}>{d.domain}</option>
-         ))}
-        </select>
-        <p className="text-[11px] text-gray-400 mt-1 flex items-start gap-1">
-         <Info size={10} className="mt-0.5 shrink-0" />
-         <span>
-          Pick one and keep it. The postback URL is registered once on the network,
-          so changing this later means re-pasting it there.
-         </span>
-        </p>
-       </div>
-       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-         Click ID Param <span className="font-normal text-gray-400">(in landing page URL)</span>
-        </label>
-        <input value={form.clickIdParam} onChange={(e) => setForm({ ...form, clickIdParam: e.target.value })}
-         placeholder="click_id" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-        <p className="mt-1 text-xs text-gray-400 flex items-center gap-1">
-         <Info size={10} /> This param is added to the advertiser's tracking link, e.g. ?{form.clickIdParam || 'click_id'}=&#123;click_id&#125;
-        </p>
-       </div>
-       <div className="grid grid-cols-2 gap-4">
-        <div>
-         <label className="block text-sm font-medium text-gray-700 mb-1">Contact Name</label>
-         <input value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-         <label className="block text-sm font-medium text-gray-700 mb-1">Contact Email</label>
-         <input value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })}
-          type="email" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-       </div>
-       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-        <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
-         rows={3} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500 resize-y" />
-       </div>
-
-       {/* Postback URL preview in modal */}
-       {trackingDomain && presets && (
-        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">Postback URL Preview</label>
-         <code className="text-xs text-gray-700 break-all block mb-2">
-          {(() => {
-           const preset = presets[form.network] || presets.custom;
-           if (!preset) return '';
-           const picked = verifiedDomains.find(d => d._id === form.trackingDomain);
-           const domain = picked?.domain || settings.trackingDomain || verifiedDomains[0]?.domain || '';
-           if (!domain) return '';
-           return buildPostbackUrl({
-            trackingDomain: toBaseUrl(domain),
-            preset,
-            secret: editing?.postbackSecret || '{auto-generated}',
-           });
-          })()}
-         </code>
-         <p className="text-[11px] text-gray-400">
-          {getInstruction(form.network)}
-         </p>
-         {form.network === 'custom' && (
-          <p className="text-[11px] text-amber-500 mt-1 flex items-center gap-1">
-           <AlertTriangle size={10} /> Default macros — verify with your advertiser's docs, otherwise conversions won't match
-          </p>
-         )}
-         {/* A preset nobody has checked against the network's own docs is the
-             same risk as 'custom', just less obvious — say so before it costs
-             a month of unattributed conversions. */}
-         {form.network !== 'custom' && presets[form.network]?.verified === false && (
-          <p className="text-[11px] text-amber-500 mt-1 flex items-start gap-1">
-           <AlertTriangle size={10} className="mt-0.5 shrink-0" />
-           <span>
-            These macros are unverified. Confirm them against{' '}
-            {presets[form.network]?.docsUrl ? (
-             <a href={presets[form.network].docsUrl} target="_blank" rel="noreferrer" className="underline">
-              {presets[form.network].label} docs
-             </a>
-            ) : 'the network docs'}{' '}before sending live traffic.
-           </span>
-          </p>
-         )}
-        </div>
-       )}
-      </div>
-      <div className="flex justify-end gap-3 mt-6">
-       <button onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
-       <button onClick={save} disabled={!form.name.trim()}
-        className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
-        {editing ? 'Save Changes' : 'Add Advertiser'}
-       </button>
-      </div>
-     </div>
-    </div>
-   )}
+   <AdvertiserFormModal
+    open={showModal}
+    editing={editing}
+    presets={presets}
+    verifiedDomains={verifiedDomains}
+    onClose={() => setShowModal(false)}
+    onSaved={() => { setShowModal(false); fetchAdvertisers(); fetchAllNames(); }}
+   />
   </div>
  );
 }

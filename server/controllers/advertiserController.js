@@ -1,7 +1,21 @@
 const Advertiser = require('../models/Advertiser');
 const Offer = require('../models/Offer');
+const TrackingDomain = require('../models/TrackingDomain');
 const crypto = require('crypto');
 const { ownerFilter, ownsDoc, denyNotFound } = require('../utils/scope');
+
+/**
+ * Tracking domain is REQUIRED on every advertiser, and there is no default:
+ * the postback URL is built on it and registered once on the network, so it
+ * has to be picked on purpose, never inherited. Returns an error string, or
+ * null when the value is a real, existing domain.
+ */
+async function checkTrackingDomain(value) {
+  if (!value) return 'Tracking domain is required';
+  if (!/^[a-f\d]{24}$/i.test(String(value))) return 'Tracking domain not found';
+  const ok = await TrackingDomain.exists({ _id: value });
+  return ok ? null : 'Tracking domain not found';
+}
 
 exports.list = async (req, res, next) => {
   try {
@@ -32,7 +46,13 @@ exports.get = async (req, res, next) => {
 
     // Fetch offers linked to this advertiser — still owner-scoped, because a
     // manager may have offers under an advertiser a partner can see.
-    const offers = await Offer.find({ advertiser: advertiser._id, ...ownerFilter(req.user) })
+    const offers = await Offer.find({
+      advertiser: advertiser._id,
+      // Soft-deleted offers are still rows in the collection; listing them here
+      // showed offers the user had deleted and counted them into the stats below.
+      status: { $ne: 'deleted' },
+      ...ownerFilter(req.user),
+    })
       .select('name status category totalClicks totalConversions totalRevenue totalPayout totalProfit currency')
       .sort('-createdAt')
       .lean();
@@ -65,6 +85,8 @@ exports.create = async (req, res, next) => {
   try {
     const { name, company, website, status, network, clickIdParam, contactName, contactEmail, notes, trackingDomain } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+    const domainError = await checkTrackingDomain(trackingDomain);
+    if (domainError) return res.status(400).json({ error: domainError });
 
     const advertiser = new Advertiser({
       name: name.trim(),
@@ -72,7 +94,7 @@ exports.create = async (req, res, next) => {
       network: network || 'custom',
       clickIdParam: clickIdParam || 'click_id',
       contactName, contactEmail, notes,
-      trackingDomain: trackingDomain || undefined,
+      trackingDomain,
       postbackSecret: crypto.randomBytes(16).toString('hex'),
       createdBy: req.user._id,
     });
@@ -90,8 +112,18 @@ exports.update = async (req, res, next) => {
     const data = { ...req.body };
     delete data.createdBy;
     delete data.postbackSecret;
-    // '' on an ObjectId ref throws a CastError — treat "no selection" as unset.
-    if (data.trackingDomain === '' || data.trackingDomain === null) data.trackingDomain = undefined;
+    // Tracking domain is required and has no default. When the update carries
+    // it, it must be a real domain (clearing it is refused). When it does not,
+    // the advertiser must already have one — older advertisers saved before
+    // this rule have to pick a domain on their next edit.
+    if (Object.prototype.hasOwnProperty.call(data, 'trackingDomain')) {
+      const domainError = await checkTrackingDomain(data.trackingDomain);
+      if (domainError) return res.status(400).json({ error: domainError });
+    } else {
+      const current = await Advertiser.findOne({ _id: req.params.id, ...ownerFilter(req.user) }).select('trackingDomain');
+      if (!current) return res.status(404).json({ error: 'Advertiser not found' });
+      if (!current.trackingDomain) return res.status(400).json({ error: 'Tracking domain is required' });
+    }
 
     const advertiser = await Advertiser.findOneAndUpdate(
       { _id: req.params.id, ...ownerFilter(req.user) },
@@ -114,8 +146,14 @@ exports.remove = async (req, res, next) => {
     // Count only the caller's own offers. The raw count used to include other
     // users' offers, so the error message disclosed how many offers someone
     // else had attached to this advertiser.
+    // `status: { $ne: 'deleted' }` is the important part. Deleting an offer is a
+    // SOFT delete — offerController sets status:'deleted' and the row stays in
+    // the collection. Without this filter the count included offers the user had
+    // already deleted, so the advertiser could never be removed and the message
+    // named an offer that no longer appears anywhere in the UI.
     const linkedOffers = await Offer.countDocuments({
       advertiser: req.params.id,
+      status: { $ne: 'deleted' },
       ...ownerFilter(req.user),
     });
     if (linkedOffers > 0) {

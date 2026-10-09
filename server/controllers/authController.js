@@ -1,7 +1,9 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { z } = require('zod');
-const { DEFAULT_ROLE } = require('../config/roles');
+const { DEFAULT_ROLE, isTeam } = require('../config/roles');
+const { loadActiveTeamOwner } = require('../middleware/auth');
+const { isValidTimezone, userTimezone, getReportTimezone } = require('../utils/appTime');
 
 const signupSchema = z.object({
   name: z.string().min(1).trim(),
@@ -51,7 +53,7 @@ exports.signup = async (req, res, next) => {
 
     res.status(201).json({
       token,
-      user: user.toJSON(),
+      user: { ...user.toJSON(), ...(await timezoneInfo({ user })) },
     });
   } catch (error) {
     next(error);
@@ -76,6 +78,16 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // A team member cannot sign in while the partner / manager who owns it is
+    // deactivated or deleted — same rule middleware/auth.js applies per request.
+    let teamOwner = null;
+    if (isTeam(user)) {
+      teamOwner = await loadActiveTeamOwner(user);
+      if (!teamOwner) {
+        return res.status(403).json({ error: 'Your team owner\'s account is inactive. Contact your partner or manager.' });
+      }
+    }
+
     // Update last login
     user.lastLogin = new Date();
     await user.save();
@@ -87,17 +99,69 @@ exports.login = async (req, res, next) => {
       { expiresIn }
     );
 
+    const out = user.toJSON();
+    Object.assign(out, await timezoneInfo({ user, teamOwner }));
+    if (teamOwner) out.teamOwnerName = teamOwner.name;
+
     res.json({
       token,
-      user: user.toJSON(),
+      user: out,
     });
   } catch (error) {
     next(error);
   }
 };
 
-exports.me = async (req, res) => {
-  res.json({ user: req.user });
+/**
+ * The signed-in user, plus the timezone the dashboard is actually running in:
+ *   dashboardTimezone  what every report on this account uses right now
+ *   ownTimezone        this user's own choice (null = account default);
+ *                      always null for a team member, who follows its owner
+ *   accountTimezone    the account default (Settings → timezone)
+ */
+async function timezoneInfo(req) {
+  const accountTimezone = await getReportTimezone();
+  const own = userTimezone(req);
+  return {
+    dashboardTimezone: own || accountTimezone,
+    ownTimezone: isTeam(req.user) ? null : own,
+    accountTimezone,
+  };
+}
+
+exports.me = async (req, res, next) => {
+  try {
+    const user = typeof req.user.toJSON === 'function' ? req.user.toJSON() : { ...req.user };
+    Object.assign(user, await timezoneInfo(req));
+    // A team member sees whose team it is on — the name only.
+    if (req.teamOwner) user.teamOwnerName = req.teamOwner.name;
+    res.json({ user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * PUT /api/auth/me/timezone  { timezone }  — this user's own dashboard timezone.
+ *
+ * Stored on the user's OWN document, never in the account-wide Settings, so a
+ * partner can pick any zone without touching the manager's or another
+ * partner's reports. '' or null resets to the account default. A team member
+ * is refused by middleware/auth.js (view-only) — it follows its owner.
+ */
+exports.updateMyTimezone = async (req, res, next) => {
+  try {
+    const raw = req.body?.timezone;
+    const tz = raw === null || raw === undefined || raw === '' ? null : String(raw).trim();
+    if (tz !== null && !isValidTimezone(tz)) {
+      return res.status(400).json({ error: 'Unknown timezone' });
+    }
+    await User.updateOne({ _id: req.user._id }, { $set: { timezone: tz } });
+    req.user.timezone = tz;
+    res.json({ timezone: tz, ...(await timezoneInfo(req)) });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.changePassword = async (req, res, next) => {

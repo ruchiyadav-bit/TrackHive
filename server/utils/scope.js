@@ -27,13 +27,35 @@
  * valid 200, just with rows that should not be there.
  */
 
+const mongoose = require('mongoose');
+const { isTeam } = require('../config/roles');
+
 /**
- * Mongo filter fragment limiting a query to documents this user owns.
- * There is no role exemption. If you find yourself wanting one, the feature
- * belongs in config/roles.js as an administrative capability instead.
+ * Whose rows this request may read.
+ *
+ * For manager and partner that is themselves. A `team` account owns nothing —
+ * it was created by a manager or partner to look at THAT creator's book — so it reads the
+ * owner recorded on the account.
+ *
+ * The unset case matters: a team account with no `teamOwner` must see NOTHING.
+ * Returning `user._id` would show it its own (empty) data, which is harmless;
+ * returning null or undefined would make `{ createdBy: undefined }` match
+ * EVERY row in the account. So we hand back a fresh ObjectId, which by
+ * construction matches nothing that exists.
+ */
+function dataOwnerId(user) {
+  if (!isTeam(user)) return user._id;
+  if (user.teamOwner) return user.teamOwner;
+  return new mongoose.Types.ObjectId();
+}
+
+/**
+ * Mongo filter fragment limiting a query to documents this user may read.
+ * The only role exemption is `team`, and it is expressed entirely through
+ * dataOwnerId() above — never add a second one here.
  */
 function ownerFilter(user) {
-  return { createdBy: user._id };
+  return { createdBy: dataOwnerId(user) };
 }
 
 /**
@@ -44,7 +66,7 @@ function ownerFilter(user) {
  */
 function ownsDoc(doc, user) {
   if (!doc) return false;
-  return String(doc.createdBy || '') === String(user._id);
+  return String(doc.createdBy || '') === String(dataOwnerId(user));
 }
 
 /**
@@ -90,6 +112,7 @@ function offerScopeMatch(ids, field = 'offerId') {
 }
 
 module.exports = {
+  dataOwnerId,
   ownerFilter,
   ownsDoc,
   denyNotFound,

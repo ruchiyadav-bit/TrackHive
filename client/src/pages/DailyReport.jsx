@@ -1,4 +1,5 @@
 import ReportShell, { fmtCurrency, fmtNumber, fmtPercent } from '../components/reports/ReportShell';
+import PnlBadge from '../components/reports/PnlBadge';
 
 const COLUMNS = [
   { key: 'date', label: 'Date', align: 'left', sortable: true },
@@ -15,8 +16,29 @@ const COLUMNS = [
   { key: 'margin', label: 'Margin', align: 'right', sortable: true },
 ];
 
+/**
+ * What a read-only team member sees instead: the same traffic, no money, and
+ * one profit/loss badge. The `field` on each column is the manager's per-member
+ * toggle — ReportShell drops a column the server says this person may not see.
+ */
+const TEAM_COLUMNS = [
+  { key: 'date', label: 'Date', align: 'left', sortable: true },
+  { key: 'grossClicks', label: 'Gross Clicks', align: 'right', sortable: true, field: 'grossClicks' },
+  { key: 'clicks', label: 'Clicks', align: 'right', sortable: true, field: 'clicks' },
+  { key: 'dupClicks', label: 'Duplicate', align: 'right', sortable: true, field: 'dupClicks' },
+  { key: 'invalidClicks', label: 'Invalid', align: 'right', sortable: true, field: 'invalidClicks' },
+  { key: 'uniqueClicks', label: 'Unique', align: 'right', sortable: true, field: 'uniqueClicks' },
+  { key: 'conversions', label: 'Conversions', align: 'right', sortable: true, field: 'conversions' },
+  { key: 'cvr', label: 'CVR', align: 'right', sortable: true, field: 'cvr' },
+  // Not sortable: the badge is derived after the query, so the server has
+  // nothing to sort on and would silently return an unsorted page.
+  { key: 'pnl', label: 'Performance', align: 'left', sortable: false, field: 'status' },
+];
+
 function renderCell(row, key) {
   switch (key) {
+    case 'pnl':
+      return <PnlBadge status={row.pnlStatus} label={row.pnlLabel} />;
     case 'date':
       return <span className="font-medium text-gray-900">{row.date}</span>;
     case 'grossClicks':
@@ -53,6 +75,7 @@ export default function DailyReport() {
       defaultSort="-date"
       defaultDays={30}
       renderCell={renderCell}
+      teamColumns={TEAM_COLUMNS}
     />
   );
 }

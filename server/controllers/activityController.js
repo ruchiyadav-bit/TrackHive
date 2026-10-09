@@ -1,4 +1,5 @@
 const ActivityLog = require('../models/ActivityLog');
+const { resolveTimezone } = require('../utils/appTime');
 
 exports.list = async (req, res, next) => {
   try {
@@ -35,6 +36,8 @@ exports.list = async (req, res, next) => {
     res.json({
       logs,
       pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / parseInt(limit)) },
+      // createdAt is rendered in this timezone, same as every report page.
+      timezone: await resolveTimezone(req),
     });
   } catch (err) {
     next(err);

@@ -3,7 +3,7 @@
 Deployment runbook for the self-hosted server. Read this before touching the
 live server. For what the product *does*, see PROJECT.md.
 
-Last updated: 2026-08-31
+Last updated: 2026-10-01
 
 ---
 
@@ -11,12 +11,12 @@ Last updated: 2026-08-31
 
 | | |
 |---|---|
-| Host | `159.65.217.159` — DigitalOcean, Ubuntu 24.04, 2 vCPU / 4 GB |
+| Host | `5.161.98.12` — Ubuntu 24.04 |
 | Panel | ServerAvatar |
 | App directory | `/home/hXSnp3qglVV4bVzL/everflow/public_html` |
 | Port | `3050` |
 | Process manager | PM2, process name `trackhive`, **fork mode** |
-| Domain | `https://trackgrouwth.adslaunchigo.com` (behind Cloudflare) |
+| Domain | `https://trackgrowth.ilaunchigo.com` |
 | Database | Local MongoDB, database name **`trackhive`** |
 | Nginx (443) | `/etc/nginx/sites-available/everflow-ssl.conf` |
 | Nginx (80) | `/etc/nginx/sites-available/everflow.conf` |
@@ -78,7 +78,7 @@ them the shell ends up inside `client/` and the next `cd client` fails.
 curl -s http://127.0.0.1:3050/api/health
 
 # Is nginx still proxying (not serving static files)?
-curl -sk -H "Host: trackgrouwth.adslaunchigo.com" https://127.0.0.1/api/health
+curl -sk -H "Host: trackgrowth.ilaunchigo.com" https://127.0.0.1/api/health
 
 # Is the nginx proxy config still intact? Should print 2.
 grep -c proxy_pass /etc/nginx/sites-available/everflow-ssl.conf
@@ -209,7 +209,7 @@ Not done. The live tracking domain is still on Render. When moving it:
 
 1. Lower the DNS TTL to 300s and wait for the old TTL to expire
 2. Delete the CNAME (a CNAME and an A record cannot coexist), add
-   `A → 159.65.217.159`
+   `A → 5.161.98.12`
 3. Issue SSL immediately — between the DNS switch and the certificate, every
    HTTPS postback fails
 4. Keep Render running 24–48h as a rollback path
