@@ -7,4 +7,7 @@ const { handleGClick, health } = require('../controllers/gclickController');
 router.get('/health', health);
 router.get('/', handleGClick);
 
+// Never let an unknown /gclick/* request fall through to the frontend SPA.
+router.all('*', (req, res) => res.status(404).json({ error: 'Not found' }));
+
 module.exports = router;

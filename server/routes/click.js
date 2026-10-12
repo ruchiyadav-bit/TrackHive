@@ -1,6 +1,17 @@
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const { handleClick } = require('../controllers/clickController');
+
+const RESTRICTED_PAGE_ASSET = path.resolve(__dirname, '../assets/access-restricted.png');
+
+// Illustration used by the generic blocked response. It lives under /click so
+// it is available on every tracking domain without exposing an app/API route.
+router.get('/access-restricted.png', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.type('png');
+  res.sendFile(RESTRICTED_PAGE_ASSET);
+});
 
 // GET /click/whoami — public diagnostic. Echoes exactly what the tracker sees
 // for THIS visitor (IP, resolved country, device, OS, browser) so geo/device

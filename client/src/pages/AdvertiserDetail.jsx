@@ -39,6 +39,9 @@ const networkBadgeColors = {
  salegains: 'bg-lime-100 text-lime-700',
  maxbounty: 'bg-fuchsia-100 text-fuchsia-700',
  maxweb: 'bg-violet-100 text-violet-700',
+  musketeers: 'bg-teal-100 text-teal-700',
+  somicreative: 'bg-purple-100 text-purple-700',
+  focussquared: 'bg-cyan-100 text-cyan-700',
   custom: 'bg-gray-100 text-gray-600',
 };
 
@@ -184,7 +187,7 @@ export default function AdvertiserDetail() {
 
   const getNetworkLabel = (key) => {
     if (presets?.[key]) return presets[key].label;
-    const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', oasisads: 'Oasis Ads', vipresponse: 'VIP Response', blueaff: 'BlueAff', salegains: 'SaleGains', maxbounty: 'MaxBounty', maxweb: 'MaxWeb', flexoffers: 'FlexOffers', fanfuel: 'FanFuel', musketeers: 'Musketeers (Trackier)', somicreative: 'Somi Creative (Affise)', custom: 'Custom / Other' };
+    const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', oasisads: 'Oasis Ads', vipresponse: 'VIP Response', blueaff: 'BlueAff', salegains: 'SaleGains', maxbounty: 'MaxBounty', maxweb: 'MaxWeb', flexoffers: 'FlexOffers', fanfuel: 'FanFuel', musketeers: 'Musketeers (Trackier)', somicreative: 'Somi Creative (Affise)', focussquared: 'Focus Squared', custom: 'Custom / Other' };
     return fallback[key] || key;
   };
 
@@ -249,6 +252,7 @@ export default function AdvertiserDetail() {
     preset,
     secret: advertiser.postbackSecret,
     clickIdParam: advertiser.clickIdParam,
+    usePostbackSecretVerification: advertiser.usePostbackSecretVerification,
   });
 
   // Mask secret
@@ -341,6 +345,10 @@ export default function AdvertiserDetail() {
 
               {/* Postback URL */}
               <CopyField label="Postback URL" value={postbackUrl} />
+              <InfoRow
+                label="Secret Verification"
+                value={advertiser.usePostbackSecretVerification === false ? 'OFF' : 'ON'}
+              />
               {getInstruction(network) && (
                 <p className="text-xs text-gray-500">{getInstruction(network)}</p>
               )}

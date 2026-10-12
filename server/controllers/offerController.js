@@ -141,7 +141,7 @@ exports.getOffer = async (req, res, next) => {
     // it. Worth knowing what that grants — the secret is the ONLY thing gating
     // /postback, so whoever holds it can forge conversions with arbitrary
     // revenue. If that ever needs narrowing, gate it here on isManager().
-    const advertiserFields = 'name postbackSecret network trackingDomain clickIdParam';
+    const advertiserFields = 'name postbackSecret usePostbackSecretVerification network trackingDomain clickIdParam';
 
     const offer = await Offer.findOne({
       _id: req.params.id,

@@ -4,18 +4,19 @@ import PublicSiteLayout from '../components/public/PublicSiteLayout';
 import { publicSite } from '../config/publicSite';
 
 const commitments = [
-  'The next destination is visible in the url query parameter.',
+  'The next immediate destination is visible in the url query parameter.',
   'The tracker responds with an HTTP 302 redirect to that visible destination.',
   'Destination domains are validated server-side against the selected offer.',
+  'Google\'s gb=1 parameter is accepted only for its exact HTTPS www.google.com/asnc parallel-tracking callback.',
   'The service does not choose a hidden backend destination or use cloaking.',
   'No unspecified intermediate click-tracking domain is inserted by the service.',
-  'Foreign parameters such as UTM values or affiliate IDs are not appended after the destination is rendered.',
+  'No custom macros, UTM values, affiliate IDs, or other foreign parameters are appended by this endpoint.',
 ];
 
 const flow = [
   { label: 'Google Ads click', detail: 'The ad uses a transparent tracking template.' },
   { label: 'Tracking service', detail: 'The service records the click and validates the visible destination.' },
-  { label: 'Advertiser landing page', detail: 'The visitor is sent directly to the URL shown in the url parameter.' },
+  { label: 'Visible next hop', detail: 'The tracker redirects to the exact URL shown in the url parameter.' },
 ];
 
 export default function ClickTrackerInfo() {
@@ -36,6 +37,8 @@ export default function ClickTrackerInfo() {
                 <div><dt className="text-slate-500">Operator</dt><dd className="mt-1 font-medium">{publicSite.legalCompanyName}</dd></div>
                 <div><dt className="text-slate-500">Tracking domain</dt><dd className="mt-1 font-mono text-blue-700">{publicSite.trackerDomain}</dd></div>
                 <div><dt className="text-slate-500">Transparency parameter</dt><dd className="mt-1 font-mono text-blue-700">url</dd></div>
+                <div><dt className="text-slate-500">Required parameters</dt><dd className="mt-1 font-mono">offer_id, url</dd></div>
+                <div><dt className="text-slate-500">Conditional Google parameter</dt><dd className="mt-1 font-mono">gb=1</dd></div>
                 <div><dt className="text-slate-500">Google Ads path</dt><dd className="mt-1 font-mono">/gclick</dd></div>
                 <div><dt className="text-slate-500">Redirect type</dt><dd className="mt-1 font-medium">HTTP 302</dd></div>
               </dl>
@@ -78,6 +81,12 @@ export default function ClickTrackerInfo() {
             The general transparent format is:
           </p>
           <pre className="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-800"><code>https://{publicSite.trackerDomain}/gclick?offer_id=&lt;offer-id&gt;&amp;url=&lt;encoded-final-url&gt;</code></pre>
+          <p className="mt-4 text-sm leading-6 text-slate-600">
+            Supported parameters are <code>offer_id</code> and <code>url</code>. During Google parallel tracking,
+            Google may additionally send <code>gb=1</code> and place its HTTPS <code>www.google.com/asnc...</code> callback
+            in <code>url</code>. That conditional value is accepted only for the exact Google callback and never selects
+            or changes the redirect destination. No other parameters or macros are supported by <code>/gclick</code>.
+          </p>
         </section>
 
         <section className="rounded-xl border border-blue-200 bg-blue-50 p-6">

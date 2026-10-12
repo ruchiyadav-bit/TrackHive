@@ -318,6 +318,9 @@ module.exports = {
 
   salegains: {
     label: 'SaleGains',
+    // The URL generator uses a path secret for this preset because SaleGains
+    // drops static query parameters from the URL saved in its postback form.
+    postbackPath: 'salegains',
     // SaleGains' postback form takes a bare URL; parameters are ticked on the
     // right and their NAMES are editable. Tokens: [id] [clickId] [merchantId]
     // [merchantName] [orderId] [channelId] [uid] [amount] [commission]
@@ -355,7 +358,7 @@ module.exports = {
     },
     verified: false,
     docsUrl: '',
-    instruction: 'LANDING PAGE URL: add uid={click_id} to the SaleGains link. POSTBACK: SaleGains -> Add postback. Postback Url: only the part up to and including secret (https://DOMAIN/postback?payout=0&event=sale&secret=...). On the right rename: uid -> click_id, commission -> revenue, orderId -> txn_id, status -> conversion_status, amount -> sale_amount; untick every other parameter. Request Type GET. Status: tick Pending, Approved and Rejected.',
+    instruction: 'LANDING PAGE URL: add uid={click_id} to the SaleGains link. POSTBACK: SaleGains -> Add postback. Paste the generated base URL exactly; do not add static query parameters. On the right map: uid -> click_id, commission -> revenue, amount -> sale_amount, orderId -> txn_id, status -> conversion_status; untick every other parameter. Request Type GET. Status: tick Pending, Approved and Rejected.',
   },
 
   maxbounty: {
@@ -523,6 +526,7 @@ module.exports = {
 
   musketeers: {
     label: 'Musketeers (Trackier)',
+    portalUrl: 'https://musketeers.trackier.io/login.html',
     // musketeers.trackier.io is a Trackier panel. Trackier's publisher docs:
     // send our click id in p1 and read it back with {p1}; {payout} is the
     // payout to the publisher (us) -> our revenue; {txn_id}, {goal_value}.
@@ -542,6 +546,7 @@ module.exports = {
 
   somicreative: {
     label: 'Somi Creative (Affise)',
+    portalUrl: 'https://somicreative.affise.com/v2/offers',
     // somicreative.affise.com is an Affise panel, so the macros are the same
     // as the `affise` preset above. Our click id goes out as &sub1=<id>.
     clickIdParam: 'sub1',
@@ -563,6 +568,25 @@ module.exports = {
     verified: false,
     docsUrl: 'https://help-center.affise.com/en/articles/6483741-affiliate-postback-url-macros',
     instruction: 'LANDING PAGE URL: add &sub1={click_id} to the Somi Creative offer link. POSTBACK: somicreative.affise.com -> Offer -> Postbacks -> Add postback -> paste the URL below.',
+  },
+
+  focussquared: {
+    label: 'Focus Squared',
+    portalUrl: 'https://partners.focussquaredllc.com/',
+    // The portal does not publish a public macro reference. Keep this preset
+    // deliberately generic and visibly unverified instead of guessing a
+    // platform-specific commission token and silently booking bad revenue.
+    clickIdParam: 'click_id',
+    macros: {
+      click_id: '{click_id}',
+      revenue:  '{revenue}',
+      payout:   '0',
+      event:    '{event}',
+      txn_id:   '{txn_id}',
+    },
+    verified: false,
+    docsUrl: 'https://partners.focussquaredllc.com/',
+    instruction: 'Focus Squared portal -> postback settings. Confirm the exact click ID, commission, event and transaction macros shown in the portal or with your account manager before live traffic.',
   },
 
   custom: {

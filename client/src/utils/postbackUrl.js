@@ -38,12 +38,22 @@ export function clickIdMacro(preset, clickIdParam) {
   return `${m[1]}${upper ? param.toUpperCase() : param}${m[3]}`;
 }
 
-export function buildPostbackUrl({ trackingDomain, preset, secret, clickIdParam }) {
+export function buildPostbackUrl({ trackingDomain, preset, secret, clickIdParam, usePostbackSecretVerification }) {
   if (!trackingDomain) return '';
 
-  const m = { ...FALLBACK_MACROS, ...(preset?.macros || {}) };
+  const m = { ...FALLBACK_MACROS, ...preset?.macros };
   m.click_id = clickIdMacro(preset, clickIdParam);
   const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
+  const verifySecret = usePostbackSecretVerification !== false;
+
+  // SaleGains only forwards parameters selected in its mapping UI. The URL
+  // preview/copy field must therefore show a bare path URL with no static
+  // query string; SaleGains appends the five dynamic mappings at send time.
+  if (preset?.postbackPath === 'salegains') {
+    return verifySecret
+      ? `${base}/postback/salegains/${encodeURIComponent(secret || 'ADVERTISER_SECRET')}`
+      : `${base}/postback`;
+  }
 
   const parts = [
     `click_id=${m.click_id}`,
@@ -61,7 +71,7 @@ export function buildPostbackUrl({ trackingDomain, preset, secret, clickIdParam 
     parts.push(`${key}=${value}`);
   }
 
-  if (secret) parts.push(`secret=${secret}`);
+  if (verifySecret && secret) parts.push(`secret=${secret}`);
 
   return `${base}/postback?${parts.join('&')}`;
 }

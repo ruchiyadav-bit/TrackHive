@@ -10,7 +10,9 @@
  *     fallback URL, no geo/device/duplicate re-routing.
  *   - Server-side validation of the target is allowed, so `url` must point at
  *     a domain this offer is allowed to send to (see allowedHosts below).
- *   - Only our own click id may be added (via the {click_id} macro).
+ *   - The normal public interface accepts exactly `offer_id` and `url`. For
+ *     Google's exact HTTPS `www.google.com/asnc...` parallel callback only,
+ *     Google may additionally send `gb=1`. No custom macros are expanded here.
  *
  * It only answers on the ONE Google tracking domain set in the dashboard
  * (Settings > Tracking > Google Ads Tracking Domain; GCLICK_HOST in .env as a
@@ -24,7 +26,7 @@ const Offer = require('../models/Offer');
 const Click = require('../models/Click');
 const DailyStat = require('../models/DailyStat');
 const {
-  generateClickId, parseVisitorInfo, checkDuplicate, replaceMacros, updateDailyStats,
+  generateClickId, parseVisitorInfo, checkDuplicate, updateDailyStats,
 } = require('../utils/clickHelpers');
 const { applyFilters } = require('../utils/trafficFilter');
 
@@ -59,6 +61,54 @@ function parseUrl(value) {
   }
 }
 
+const GCLICK_QUERY_PARAMETERS = new Set(['offer_id', 'url']);
+
+/**
+ * Google Ads replaces {lpurl} with this callback while testing/processing a
+ * parallel-tracking request. Keep the exception deliberately narrow so the
+ * tracker cannot become a general-purpose redirect to google.com.
+ */
+function isGoogleParallelCallback(target) {
+  return target.protocol === 'https:'
+    && target.hostname.toLowerCase() === 'www.google.com'
+    && (target.pathname === '/asnc' || target.pathname.startsWith('/asnc/'));
+}
+
+/**
+ * Keep the certification-facing interface exact and auditable. Parameters
+ * used by the normal /click button URL (sub1-sub5, source, etc.) deliberately
+ * do not belong to /gclick.
+ */
+function parseGclickQuery(query = {}) {
+  const offerId = query.offer_id;
+  if (Array.isArray(offerId) || !offerId || !/^[a-f\d]{24}$/i.test(String(offerId))) {
+    return { error: 'offer_id is required' };
+  }
+
+  if (Array.isArray(query.url)) {
+    return { error: 'url is required (http/https)' };
+  }
+  const target = parseUrl(query.url);
+  if (!target) {
+    return { error: 'url is required (http/https)' };
+  }
+
+  const googleParallelCallback = isGoogleParallelCallback(target);
+  const supported = googleParallelCallback
+    ? new Set([...GCLICK_QUERY_PARAMETERS, 'gb'])
+    : GCLICK_QUERY_PARAMETERS;
+  const unsupported = Object.keys(query).filter(key => !supported.has(key));
+  if (unsupported.length) {
+    return { error: `Unsupported parameter: ${unsupported[0]}` };
+  }
+  if (googleParallelCallback && query.gb !== undefined
+    && (Array.isArray(query.gb) || String(query.gb) !== '1')) {
+    return { error: 'Invalid Google parallel tracking parameter' };
+  }
+
+  return { offerId: String(offerId), target, googleParallelCallback };
+}
+
 /**
  * Destination domains this offer may send to: the landing page's own host,
  * plus any URL carried inside the landing page's query string (affiliate links
@@ -88,14 +138,9 @@ exports.handleGClick = async (req, res) => {
       return res.status(404).json({ error: 'Not found' });
     }
 
-    const offerId = req.query.offer_id || req.query.oid;
-    if (!offerId || !/^[a-f\d]{24}$/i.test(String(offerId))) {
-      return res.status(400).json({ error: 'offer_id is required' });
-    }
-    const target = parseUrl(req.query.url);
-    if (!target) {
-      return res.status(400).json({ error: 'url is required (http/https)' });
-    }
+    const parsed = parseGclickQuery(req.query);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const { offerId, target, googleParallelCallback } = parsed;
 
     const offer = await Offer.findOne({ _id: offerId, status: 'active' }).lean();
     if (!offer) {
@@ -104,25 +149,23 @@ exports.handleGClick = async (req, res) => {
 
     const targetHost = target.hostname.toLowerCase().replace(/^www\./, '');
     const allowed = allowedHosts(offer.landingPageUrl || offer.offerUrl, offer.googleLandingUrl);
-    if (!allowed.some(base => hostMatches(targetHost, base))) {
+    if (!googleParallelCallback && !allowed.some(base => hostMatches(targetHost, base))) {
       return res.status(400).json({ error: 'url domain is not allowed for this offer' });
     }
 
     const visitor = parseVisitorInfo(req);
     const clickId = generateClickId();
     const subIds = {
-      subId1: req.query.sub1 || req.query.subid || '',
-      subId2: req.query.sub2 || '',
-      subId3: req.query.sub3 || '',
-      subId4: req.query.sub4 || '',
-      subId5: req.query.sub5 || '',
-      source: req.query.source || '',
+      subId1: '',
+      subId2: '',
+      subId3: '',
+      subId4: '',
+      subId5: '',
+      source: '',
     };
 
-    // Only our own macros ({click_id} etc.) are expanded; nothing else is added.
-    const finalUrl = replaceMacros(target.toString(), {
-      clickId, offerId: offer._id.toString(), ...subIds, ...visitor,
-    });
+    // Transparent means exact: send the visitor to the visible `url` value.
+    const finalUrl = target.toString();
 
     // Flags are recorded for reporting only. They never change the destination.
     const filter = applyFilters(offer, visitor, req);
@@ -182,3 +225,7 @@ exports.health = async (req, res) => {
   if (!(await isGoogleHost(req))) return res.status(404).json({ error: 'Not found' });
   res.json({ ok: true, host: requestHost(req) });
 };
+
+// Exported only so the strict public contract can be covered by unit tests.
+exports.parseGclickQuery = parseGclickQuery;
+exports.isGoogleParallelCallback = isGoogleParallelCallback;

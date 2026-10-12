@@ -83,8 +83,17 @@ exports.get = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { name, company, website, status, network, clickIdParam, contactName, contactEmail, notes, trackingDomain } = req.body;
+    const {
+      name, company, website, status, network, clickIdParam, contactName,
+      contactEmail, notes, trackingDomain, usePostbackSecretVerification,
+    } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+    if (
+      usePostbackSecretVerification !== undefined &&
+      typeof usePostbackSecretVerification !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'Use postback secret verification must be true or false' });
+    }
     const domainError = await checkTrackingDomain(trackingDomain);
     if (domainError) return res.status(400).json({ error: domainError });
 
@@ -96,6 +105,7 @@ exports.create = async (req, res, next) => {
       contactName, contactEmail, notes,
       trackingDomain,
       postbackSecret: crypto.randomBytes(16).toString('hex'),
+      usePostbackSecretVerification: usePostbackSecretVerification !== false,
       createdBy: req.user._id,
     });
     await advertiser.save();
@@ -112,6 +122,12 @@ exports.update = async (req, res, next) => {
     const data = { ...req.body };
     delete data.createdBy;
     delete data.postbackSecret;
+    if (
+      Object.prototype.hasOwnProperty.call(data, 'usePostbackSecretVerification') &&
+      typeof data.usePostbackSecretVerification !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'Use postback secret verification must be true or false' });
+    }
     // Tracking domain is required and has no default. When the update carries
     // it, it must be a real domain (clearing it is refused). When it does not,
     // the advertiser must already have one — older advertisers saved before

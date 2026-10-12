@@ -11,9 +11,13 @@ const advertiserSchema = new mongoose.Schema(
       type: String,
       default: () => crypto.randomBytes(16).toString('hex'),
     },
+    // Default-secure and backwards compatible: old documents do not have this
+    // field, so every caller must also treat anything except explicit `false`
+    // as verification enabled.
+    usePostbackSecretVerification: { type: Boolean, default: true },
     network: {
       type: String,
-      enum: ['impact', 'everflow', 'affise', 'trackier', 'cellxpert', 'katalys', 'smartadv', 'oasisads', 'vipresponse', 'blueaff', 'salegains', 'maxbounty', 'maxweb', 'verdeads', 'jb', 'vexio', 'flexoffers', 'fanfuel', 'musketeers', 'somicreative', 'custom'],
+      enum: ['impact', 'everflow', 'affise', 'trackier', 'cellxpert', 'katalys', 'smartadv', 'oasisads', 'vipresponse', 'blueaff', 'salegains', 'maxbounty', 'maxweb', 'verdeads', 'jb', 'vexio', 'flexoffers', 'fanfuel', 'musketeers', 'somicreative', 'focussquared', 'custom'],
       default: 'custom',
     },
     clickIdParam: { type: String, default: 'click_id', trim: true },

@@ -17,12 +17,14 @@ const FALLBACK_NETWORKS = [
   ['cellxpert', 'Cellxpert'], ['katalys', 'Katalys'], ['smartadv', 'SmartAdv'], ['oasisads', 'Oasis Ads'],
   ['vipresponse', 'VIP Response'], ['blueaff', 'BlueAff'], ['salegains', 'SaleGains'], ['maxbounty', 'MaxBounty'],
   ['maxweb', 'MaxWeb'], ['flexoffers', 'FlexOffers'], ['fanfuel', 'FanFuel'],
-  ['musketeers', 'Musketeers (Trackier)'], ['somicreative', 'Somi Creative (Affise)'], ['custom', 'Custom / Other'],
+  ['musketeers', 'Musketeers (Trackier)'], ['somicreative', 'Somi Creative (Affise)'],
+  ['focussquared', 'Focus Squared'], ['custom', 'Custom / Other'],
 ];
 
 const EMPTY = {
   name: '', company: '', website: '', status: 'active', network: 'custom',
-  clickIdParam: 'click_id', trackingDomain: '', contactName: '', contactEmail: '', notes: '',
+  clickIdParam: 'click_id', trackingDomain: '', usePostbackSecretVerification: true,
+  contactName: '', contactEmail: '', notes: '',
 };
 
 function fromAdvertiser(adv) {
@@ -32,6 +34,7 @@ function fromAdvertiser(adv) {
     status: adv.status || 'active', network: adv.network || 'custom',
     clickIdParam: adv.clickIdParam || 'click_id',
     trackingDomain: (typeof adv.trackingDomain === 'object' ? adv.trackingDomain?._id : adv.trackingDomain) || '',
+    usePostbackSecretVerification: adv.usePostbackSecretVerification !== false,
     contactName: adv.contactName || '', contactEmail: adv.contactEmail || '', notes: adv.notes || '',
   };
 }
@@ -78,8 +81,9 @@ export default function AdvertiserFormModal({ open, editing, presets, verifiedDo
     ? buildPostbackUrl({
         trackingDomain: toBaseUrl(picked.domain),
         preset,
-        secret: editing?.postbackSecret || '{auto-generated}',
+        secret: editing?.postbackSecret || 'ADVERTISER_SECRET',
         clickIdParam: form.clickIdParam,
+        usePostbackSecretVerification: form.usePostbackSecretVerification,
       })
     : '';
 
@@ -135,6 +139,21 @@ export default function AdvertiserFormModal({ open, editing, presets, verifiedDo
               <Info size={10} /> Added to the advertiser's tracking link, e.g. ?{form.clickIdParam || 'click_id'}={'{click_id}'}
             </p>
           </div>
+
+          <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.usePostbackSecretVerification}
+              onChange={e => set({ usePostbackSecretVerification: e.target.checked })}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-gray-700">Use postback secret verification</span>
+              <span className="block text-xs text-gray-400 mt-0.5">
+                Recommended. Turn off only when this advertiser cannot send a secret; all click, offer, duplicate, status and revenue checks remain active.
+              </span>
+            </span>
+          </label>
 
           {/* Postback URL preview: the exact URL that will be shown on the list. */}
           {presets && (

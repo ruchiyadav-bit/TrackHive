@@ -23,10 +23,19 @@ function clickIdMacro(preset, clickIdParam) {
   return `${m[1]}${upper ? param.toUpperCase() : param}${m[3]}`;
 }
 
-function buildPostbackUrl({ trackingDomain, network, secret, clickIdParam }) {
+function buildPostbackUrl({ trackingDomain, network, secret, clickIdParam, usePostbackSecretVerification }) {
   const preset = presets[network] || presets.custom;
   const m = { ...preset.macros, click_id: clickIdMacro(preset, clickIdParam) };
   const base = trackingDomain.startsWith('http') ? trackingDomain : `https://${trackingDomain}`;
+  const verifySecret = usePostbackSecretVerification !== false;
+
+  // SaleGains keeps the saved base URL but drops static query parameters. Its
+  // dynamic mapping UI appends click_id/revenue/etc. when it fires the call.
+  if (preset.postbackPath === 'salegains') {
+    return verifySecret
+      ? `${base}/postback/salegains/${encodeURIComponent(secret || 'ADVERTISER_SECRET')}`
+      : `${base}/postback`;
+  }
   // Some networks expose extra signals worth carrying (e.g. Katalys sends an
   // approval status and a create/update/delete operation). TrackHive ignores
   // unknown params today, but including them means the URL already pasted into
@@ -48,7 +57,7 @@ function buildPostbackUrl({ trackingDomain, network, secret, clickIdParam }) {
     `&event=${m.event}` +
     txn +
     extra +
-    `${secret ? `&secret=${secret}` : ''}`
+    `${verifySecret && secret ? `&secret=${secret}` : ''}`
   );
 }
 

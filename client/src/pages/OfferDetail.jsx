@@ -229,7 +229,13 @@ export default function OfferDetail() {
  // showing the offer's domain here would hand out a URL that does not match it.
  const advObj = typeof offer.advertiser === 'object' ? offer.advertiser : null;
  const postbackBase = toBaseUrl(resolveAdvertiserDomain(advObj, settings, []) || trackingDomain);
- const postbackUrl = buildPostbackUrl({ trackingDomain: postbackBase, preset, secret: advSecret, clickIdParam: advObj?.clickIdParam });
+ const postbackUrl = buildPostbackUrl({
+  trackingDomain: postbackBase,
+  preset,
+  secret: advSecret,
+  clickIdParam: advObj?.clickIdParam,
+  usePostbackSecretVerification: advObj?.usePostbackSecretVerification,
+ });
 
  // Stats
  const cvr = offer.totalClicks > 0 ? (offer.totalConversions / offer.totalClicks) * 100 : 0;

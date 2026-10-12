@@ -3,6 +3,7 @@ const Offer = require('../models/Offer');
 const Advertiser = require('../models/Advertiser');
 const DailyStat = require('../models/DailyStat');
 const Notification = require('../models/Notification');
+const crypto = require('crypto');
 const { updateDailyStats } = require('../utils/clickHelpers');
 const { getReportTimezone, todayInTz, monthStartInTz } = require('../utils/appTime');
 const networkPresets = require('../config/networkPresets');
@@ -38,6 +39,14 @@ class BadAmount extends Error {
 const reject = (res, reason, error, extra = {}) =>
   res.status(200).json({ success: false, reason, error, ...extra });
 
+/** Constant-time comparison without ever putting either credential in output. */
+function secretsMatch(provided, expected) {
+  if (!provided || !expected) return false;
+  const received = Buffer.from(String(provided));
+  const saved = Buffer.from(String(expected));
+  return received.length === saved.length && crypto.timingSafeEqual(received, saved);
+}
+
 /**
  * Handle postback conversion: GET /postback?click_id=xxx&payout=1.50&event=signup&secret=abc
  */
@@ -48,7 +57,18 @@ exports.handlePostback = async (req, res) => {
     // mounts express.json() for exactly that, but this handler used to read
     // req.query only, so every POST conversion was rejected as "click_id is
     // required" and silently lost.
-    const p = { ...(req.body || {}), ...req.query };
+    const isSaleGainsPath = req.postbackNetwork === 'salegains';
+    const p = { ...(req.body || {}), ...(req.query || {}) };
+
+    // SaleGains drops every static query-string value from the saved postback
+    // URL and only appends fields selected in its mapping UI. Its credential
+    // therefore lives in the path. Assign it after body/query merging so a
+    // query parameter can never override the path credential.
+    if (isSaleGainsPath) {
+      p.secret = req.params?.secret || '';
+      if (p.event === undefined || p.event === '') p.event = 'sale';
+      if (p.payout === undefined || p.payout === '') p.payout = '0';
+    }
 
     const clickId = p.click_id || p.clickid || p.cid;
     if (!clickId) {
@@ -74,9 +94,11 @@ exports.handlePostback = async (req, res) => {
       const advertiser = await Advertiser.findById(offer.advertiser);
       if (advertiser) {
         advertiserNetwork = advertiser.network || 'custom';
-        if (advertiser.postbackSecret) {
+        // Missing field on an older advertiser is intentionally ON. Only an
+        // explicit false disables this check, and only for this advertiser.
+        if (advertiser.usePostbackSecretVerification !== false) {
           const providedSecret = p.secret || p.token || '';
-          if (providedSecret !== advertiser.postbackSecret) {
+          if (!secretsMatch(providedSecret, advertiser.postbackSecret)) {
             return reject(res, 'invalid_secret', 'Invalid postback secret');
           }
         }
@@ -389,6 +411,16 @@ exports.handlePostback = async (req, res) => {
     console.error('Postback error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
+};
+
+/**
+ * SaleGains-specific public endpoint. It only adapts path/default parameters;
+ * every lookup, duplicate guard, status rule and amount check remains in the
+ * shared postback processor above.
+ */
+exports.handleSaleGainsPostback = (req, res) => {
+  req.postbackNetwork = 'salegains';
+  return exports.handlePostback(req, res);
 };
 
 /**

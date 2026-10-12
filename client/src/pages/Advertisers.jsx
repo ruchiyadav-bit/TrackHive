@@ -89,7 +89,13 @@ export default function Advertisers() {
   if (!preset) return null;
   const domain = resolveAdvertiserDomain(adv, settings, verifiedDomains);
   if (!domain) return null;
-  return buildPostbackUrl({ trackingDomain: toBaseUrl(domain), preset, secret: adv.postbackSecret, clickIdParam: adv.clickIdParam });
+  return buildPostbackUrl({
+   trackingDomain: toBaseUrl(domain),
+   preset,
+   secret: adv.postbackSecret,
+   clickIdParam: adv.clickIdParam,
+   usePostbackSecretVerification: adv.usePostbackSecretVerification,
+  });
  };
 
  const openAdd = () => { setEditing(null); setShowModal(true); };
@@ -116,7 +122,7 @@ export default function Advertisers() {
 
  const getNetworkLabel = (key) => {
   if (presets?.[key]) return presets[key].label;
-  const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', oasisads: 'Oasis Ads', vipresponse: 'VIP Response', blueaff: 'BlueAff', salegains: 'SaleGains', maxbounty: 'MaxBounty', maxweb: 'MaxWeb', flexoffers: 'FlexOffers', fanfuel: 'FanFuel', musketeers: 'Musketeers (Trackier)', somicreative: 'Somi Creative (Affise)', custom: 'Custom / Other' };
+  const fallback = { impact: 'Impact.com', everflow: 'Everflow', affise: 'Affise', trackier: 'Trackier', cellxpert: 'Cellxpert', katalys: 'Katalys', smartadv: 'SmartAdv', oasisads: 'Oasis Ads', vipresponse: 'VIP Response', blueaff: 'BlueAff', salegains: 'SaleGains', maxbounty: 'MaxBounty', maxweb: 'MaxWeb', flexoffers: 'FlexOffers', fanfuel: 'FanFuel', musketeers: 'Musketeers (Trackier)', somicreative: 'Somi Creative (Affise)', focussquared: 'Focus Squared', custom: 'Custom / Other' };
   return fallback[key] || key;
  };
 

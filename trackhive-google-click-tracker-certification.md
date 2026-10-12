@@ -1,6 +1,6 @@
 # TrackHive: Google Ads Click Tracker Certification
 
-Last updated: 9 October 2026
+Last updated: 12 October 2026
 
 This document records the current Google Ads transparent click-tracker setup for the dashboard and `go.trackscales.com`.
 
@@ -13,6 +13,8 @@ Official Google guidance: https://support.google.com/google-ads/answer/13707399
 - Google Ads tracking endpoint: `/gclick`
 - Certified tracking domain to submit: `go.trackscales.com`
 - Transparency parameter: `url`
+- Required service parameter: `offer_id`
+- Conditional Google parallel-tracking parameter: `gb=1` (accepted only when `url` is Google's exact HTTPS `/asnc` callback)
 - Redirect response: HTTP 302
 - Public tracker-information page: `https://trackgrowth.ilaunchigo.com/tracker-info`
 - Privacy Policy: `https://trackgrowth.ilaunchigo.com/privacy`
@@ -38,40 +40,32 @@ How it works:
 
 1. Google places the ad's final landing-page URL in `{lpurl}`.
 2. The final destination remains visible in the `url` query parameter.
-3. The server validates the destination domain against the selected offer.
-4. A valid click receives one HTTP 302 redirect to that visible destination.
+3. For a normal/non-parallel request, the server validates the destination domain against the selected offer.
+4. A valid request receives one HTTP 302 redirect to the exact visible `url` value.
 5. The service does not select a hidden backend destination or insert an unspecified intermediate tracking domain.
-6. Foreign UTM or affiliate parameters are not appended after the destination has been rendered.
+6. The tracker does not expand custom macros or append UTM, affiliate, `sub1`-`sub5`, or source parameters.
 
-The `url` value must be the direct advertiser or merchant landing page. Do not put an affiliate-network redirect URL in `url`.
+Google parallel tracking:
+
+- The Google Ads template remains exactly the template shown above; never paste a `google.com/asnc` URL into the template.
+- During Google's parallel-tracking test, Google can replace `{lpurl}` with an HTTPS `https://www.google.com/asnc...` callback and can add `gb=1`.
+- The service accepts this exception only for host `www.google.com`, path `/asnc` or `/asnc/...`, HTTPS, and optional `gb=1`.
+- Arbitrary Google URLs, other extra parameters, duplicate values, and any `gb` value other than `1` are rejected.
+- In parallel mode the user reaches the ad Final URL directly; the background tracker redirects only to the visible Google `/asnc` callback.
+
+For normal/non-parallel requests, the `url` value must be the direct advertiser or merchant landing page. Do not put an affiliate-network redirect URL in `url`. Google's exact `/asnc` callback is the only parallel-tracking exception.
 
 ---
 
-## 3. v5 deployment package
+## 3. Supported parameters to disclose
 
-Use only this ZIP; it already includes all v4 certification-page changes:
+| Parameter | Required | Meaning |
+|---|---:|---|
+| `offer_id` | Yes | Internal offer identifier used to select the approved landing-page-domain allowlist and record the click. It does not choose a hidden redirect destination. |
+| `url` | Yes | Visible next immediate hop. The tracker redirects to this exact value after validation. |
+| `gb` | Conditional | Google-supplied parallel-tracking flag. Only literal `gb=1` is accepted, and only when `url` is the exact HTTPS `www.google.com/asnc...` callback. It does not alter the redirect destination. |
 
-```text
-trackhive-google-certification-pages-v5-dynamic-website-name.zip
-```
-
-Upload it with FileZilla to:
-
-```text
-/root/everflow/public_html/
-```
-
-Then run in MobaXterm:
-
-```bash
-cd /root/everflow/public_html
-unzip -o trackhive-google-certification-pages-v5-dynamic-website-name.zip -d .
-cd client && npm run build
-cd ..
-pm2 restart trackhive
-```
-
-A PM2 restart is required because v5 adds a public API endpoint that returns only the saved Website Name. No private settings are exposed by this endpoint.
+No other `/gclick` parameters or macros are supported. Parameters used by the separate landing-page button route `/click` are not `/gclick` parameters and must not be listed as such.
 
 ---
 
@@ -88,7 +82,8 @@ A PM2 restart is required because v5 adds a public API endpoint that returns onl
 - [ ] The real example redirects directly to the approved merchant landing-page domain.
 - [ ] The redirect chain contains only one tracker hop before the final destination.
 - [ ] The test click appears in dashboard logs.
-- [ ] Google Ads' tracking-template test reaches the final URL without an error.
+- [ ] Google Ads' tracking-template test shows **Landing page found** and **Tracking call successful** for both parallel and non-parallel samples.
+- [ ] Every ad/ad group covered by the tested template uses the intended offer ID and an allowed Final URL; no red sample remains in the evidence submitted to Google.
 
 Example with a real active offer:
 
@@ -101,6 +96,9 @@ Negative tests:
 - Missing `offer_id` must fail.
 - Missing `url` must fail.
 - A destination domain that is not allowed for the offer must fail.
+- An unknown query parameter must fail.
+- `gb` without an exact HTTPS `www.google.com/asnc...` callback must fail.
+- A Google `/asnc` callback with a `gb` value other than `1` must fail.
 - `/gclick` on an unrelated tracking domain must not be used for Google Ads.
 
 ---
@@ -116,7 +114,8 @@ Negative tests:
 | Privacy Policy URL | `https://trackgrowth.ilaunchigo.com/privacy` |
 | Tracking domain | `go.trackscales.com` |
 | Click-tracker path | `/gclick` |
-| Transparency parameter | `url` |
+| Supported parameters | `offer_id`, `url`, plus conditional Google-owned `gb=1` for the exact HTTPS `www.google.com/asnc...` parallel callback |
+| Transparency parameter | `url` (always contains the visible next immediate hop) |
 | Redirect type | HTTP 302, one tracker hop, directly to the visible `url` destination |
 | Working example | Use a real active offer and a direct approved merchant URL |
 | Corporate email | Must be a real company-domain email; do not submit the placeholder |
@@ -126,9 +125,29 @@ Short English description for the form:
 
 > Our service provides transparent click tracking for Google Ads. Google Ads clicks use `https://go.trackscales.com/gclick` with a visible `url` query parameter containing the next destination. The tracker validates the destination domain against the selected offer and issues an HTTP 302 redirect directly to that destination. It does not select a hidden backend destination, insert an unspecified intermediate tracking domain, or append foreign parameters after the destination is rendered.
 
+Parallel-tracking disclosure for the form or reviewer:
+
+> The supported service parameters are `offer_id` and `url`. When Google performs parallel tracking, Google may additionally send `gb=1` and replace `{lpurl}` with its HTTPS `www.google.com/asnc...` callback. The tracker accepts that conditional parameter only for the exact Google callback and redirects to the unchanged visible `url`; it does not use `gb` to select another destination.
+
 ---
 
-## 6. Strict remaining items before form submission
+## 6. Landing-page review checklist
+
+Tracker certification and Google Ads landing-page review are separate checks. For the real certification example, the landing page should:
+
+- return successfully over HTTPS on desktop and mobile and allow Google AdsBot crawling;
+- use the same Final URL/display domain configured in the ad;
+- contain useful, original content relevant to the ad rather than being a one-button bridge page;
+- never auto-redirect to the affiliate/merchant tracking URL;
+- open the relevant merchant destination only after a genuine user button click;
+- avoid misleading claims, fake warnings, forced pop-ups, hidden click areas, or back-button interference; and
+- include accurate privacy/contact disclosures wherever data collection or the promoted vertical requires them.
+
+A green Google Ads tracking-template test proves the technical URL flow only. It does not by itself approve the landing page or guarantee certification.
+
+---
+
+## 7. Strict remaining items before form submission
 
 The code and ZIP cannot complete these external requirements automatically:
 
@@ -144,11 +163,13 @@ Do not submit the form while the public pages show the contact-email configurati
 
 ---
 
-## 7. Do not change these behaviours
+## 8. Do not change these behaviours
 
 - Do not add cloaking, conditional hidden destinations, or backend fallback redirects to `/gclick`.
 - Do not add another undisclosed click-tracking domain between `go.trackscales.com` and the landing page.
 - Do not use an affiliate-network redirect URL as the `url` destination.
+- Do not treat Google `/asnc` as the user's landing page; it is only Google's background callback during parallel tracking.
+- Do not accept `gb` for normal destinations or broaden the `/asnc` exception beyond the exact Google host/path rule.
 - Do not replace `/gclick` with the older `/click` flow in Google Ads.
 - Do not add a new Google Ads tracking path without updating the certification details.
 
